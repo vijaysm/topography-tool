@@ -5,9 +5,9 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
   MOAB_CXXFLAGS += -fopenmp -g -O2
   MOAB_LIBS_LINK += -fopenmp
-else
+else # Darwin
   MOAB_CXXFLAGS += -g -std=c++17 -Xpreprocessor -fopenmp -I/opt/homebrew/Cellar/libomp/21.1.0/include
-  MOAB_LIBS_LINK = -L/opt/homebrew/Cellar/libomp/21.1.0/lib -lomp
+  MOAB_LIBS_LINK += -L/opt/homebrew/Cellar/libomp/21.1.0/lib -lomp
 endif
 
 MOAB_CXXFLAGS += -Iinclude # add include directory for the tool
@@ -20,7 +20,7 @@ LINK_FILES := $(patsubst src/%.cpp, %.o, $(SRC_FILES))
 	@echo "  [CXX]  $< ..."
 	${VERBOSE}${MOAB_CXX} ${CXXFLAGS} ${MOAB_CXXFLAGS} ${MOAB_CPPFLAGS} ${MOAB_INCLUDES} -DMESH_DIR=\"${MESH_DIR}\" -c $< -o $@
 
-default: all
+default: .dummy all
 
 EXAMPLES =  TOPORemapper
 ALLEXAMPLES = ${EXAMPLES}
@@ -33,6 +33,9 @@ TOPORemapper: $(OBJ_FILES)
 	${VERBOSE}${MOAB_CXX} -o $@ ${OBJ_FILES} ${MOAB_LIBS_LINK}
 
 run: all $(addprefix run-,$(ALLEXAMPLES))
+
+.dummy:
+	@mkdir -p .objs
 
 clean: clobber
 	rm -rf ${ALLEXAMPLES}
