@@ -191,9 +191,9 @@ void ScalarRemapper::print_remapping_statistics() {
 
         if (field_data.empty()) continue;
 
-        int min_val = *std::min_element(field_data.begin(), field_data.end());
-        int max_val = *std::max_element(field_data.begin(), field_data.end());
-        int sum = std::accumulate(field_data.begin(), field_data.end(), 0);
+        double min_val = *std::min_element(field_data.begin(), field_data.end());
+        double max_val = *std::max_element(field_data.begin(), field_data.end());
+        double sum = std::accumulate(field_data.begin(), field_data.end(), 0);
         double avg = sum / field_data.size();
 
         std::cout << var_name << " - Min: " << min_val << ", Max: " << max_val
@@ -1037,7 +1037,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 // Compute weighted average from neighboring points (vectorized)
                 const double gll_weight = dataGLLJacobian[gll_idx]; // Element 0 since we process one face at a time
                 const ParallelPointCloudReader::CoordinateType search_radius = gll_weight * gll_weight; // Element 0 since we process one face at a time
-                const size_t max_neighbors = 10;
+                const size_t max_neighbors = 10000;
 
                 // Convert GLL point to query format (aligned for SIMD)
                 // alignas(16) ParallelPointCloudReader::CoordinateType query_pt[3] = {gll_point[0], gll_point[1], gll_point[2]};
