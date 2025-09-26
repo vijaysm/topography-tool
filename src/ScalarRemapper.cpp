@@ -1,4 +1,5 @@
 #include "ScalarRemapper.hpp"
+#include "moab/CartVect.hpp"
 #include <iostream>
 #include <cmath>
 #include <algorithm>
@@ -21,7 +22,7 @@ static double compute_distance(const ParallelPointCloudReader::PointType3D& p1, 
 }
 
 ScalarRemapper::ScalarRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
-    : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set) {
+    : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set), m_kdtree_built(false) {
 }
 
 ErrorCode ScalarRemapper::configure(const RemapConfig& config) {
@@ -257,14 +258,14 @@ ErrorCode ScalarRemapper::write_to_tags(const std::string& tag_prefix) {
 
 // Nearest Neighbor Remapper Implementation
 NearestNeighborRemapper::NearestNeighborRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
-    : ScalarRemapper(interface, pcomm, mesh_set), m_kdtree_built(false) {
+    : ScalarRemapper(interface, pcomm, mesh_set) {
 }
 
 NearestNeighborRemapper::~NearestNeighborRemapper() {
     // KD-tree cleanup handled automatically by unique_ptr
 }
 
-ErrorCode NearestNeighborRemapper::build_kdtree(const ParallelPointCloudReader::PointData& point_data) {
+ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData& point_data) {
     if (point_data.lonlat_coordinates.empty()) {
         return MB_FAILURE;
     }
@@ -318,7 +319,9 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.centroids.size(); ++elem_idx) {
         const ParallelPointCloudReader::PointType3D& centroid = m_mesh_data.centroids[elem_idx];
 
-        size_t nearest_point_idx = find_nearest_point(centroid, point_data);
+        auto nearest_point = find_nearest_point(centroid, point_data);
+        size_t nearest_point_idx = nearest_point.first;
+        // ParallelPointCloudReader::CoordinateType nearest_point_dist_sq = nearest_point.second * nearest_point.second;
 
         if (elem_idx < 10) {
             std::cout << "Nearest point for element " << elem_idx << " is " << nearest_point_idx << std::endl;
@@ -354,8 +357,9 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
     return MB_SUCCESS;
 }
 
-size_t NearestNeighborRemapper::find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
-                                               const ParallelPointCloudReader::PointData& point_data) {
+std::pair<size_t, ParallelPointCloudReader::CoordinateType> ScalarRemapper::find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
+                                               const ParallelPointCloudReader::PointData& point_data,
+                                             int max_neighbors) {
     if (!m_kdtree_built || !m_kdtree) {
         // Fallback to linear search if KD-tree is not available
         size_t nearest_idx = static_cast<size_t>(-1);
@@ -378,7 +382,7 @@ size_t NearestNeighborRemapper::find_nearest_point(const ParallelPointCloudReade
             }
         }
 
-        return nearest_idx;
+        return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(nearest_idx, min_distance);
     }
 
     // Use KD-tree for fast nearest neighbor search
@@ -393,7 +397,7 @@ size_t NearestNeighborRemapper::find_nearest_point(const ParallelPointCloudReade
                 target_point.data(), m_config.search_radius * m_config.search_radius, ret_matches, params);
 
             if (num_matches == 0) {
-                return static_cast<size_t>(-1);
+                return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0);
             }
 
             // Find the closest match within radius
@@ -405,21 +409,21 @@ size_t NearestNeighborRemapper::find_nearest_point(const ParallelPointCloudReade
                     best_idx = ret_matches[i].first;
                 }
             }
-            return best_idx;
+            return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(best_idx, best_dist);
         } else {
             // Simple nearest neighbor search
-            std::vector<size_t> ret_index(m_config.max_neighbors);
-            std::vector<ParallelPointCloudReader::CoordinateType> out_dist_sqr(m_config.max_neighbors);
-            nanoflann::KNNResultSet<ParallelPointCloudReader::CoordinateType> result_set(m_config.max_neighbors);
+            std::vector<size_t> ret_index(max_neighbors);
+            std::vector<ParallelPointCloudReader::CoordinateType> out_dist_sqr(max_neighbors);
+            nanoflann::KNNResultSet<ParallelPointCloudReader::CoordinateType> result_set(max_neighbors);
             result_set.init(ret_index.data(), out_dist_sqr.data());
 
             m_kdtree->findNeighbors(result_set, target_point.data(), nanoflann::SearchParameters());
 
-            return ret_index[0]; // Return the nearest point index
+            return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(ret_index[0], out_dist_sqr[0]); // Return the nearest point index
         }
     } catch (const std::exception& e) {
         std::cerr << "Error in KD-tree search: " << e.what() << std::endl;
-        return static_cast<size_t>(-1);
+        return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0);
     }
 }
 
@@ -516,6 +520,8 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
     EntityHandle mesh_set) {
 
     switch (method) {
+        case PC_AVERAGED_SPECTRAL_PROJECTION:
+            return std::unique_ptr<ScalarRemapper>(new PCSpectralProjectionRemapper(interface, pcomm, mesh_set));
         case NEAREST_NEIGHBOR:
             return std::unique_ptr<ScalarRemapper>(new NearestNeighborRemapper(interface, pcomm, mesh_set));
         case INVERSE_DISTANCE:
@@ -530,5 +536,872 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
             return std::unique_ptr<ScalarRemapper>();
     }
 }
+
+
+
+static moab::ErrorCode Remapper_ApplyLocalMap(
+    Interface* mb,
+    const double nodes[12],
+	double dAlpha,
+	double dBeta,
+	CartVect& node,
+	CartVect* dDx1G = nullptr,
+	CartVect* dDx2G = nullptr
+) {
+	// Calculate nodal locations on the plane
+	double dXc =
+		  nodes[0*3+0] * (1.0 - dAlpha) * (1.0 - dBeta)
+		+ nodes[1*3+0] *        dAlpha  * (1.0 - dBeta)
+		+ nodes[2*3+0] *        dAlpha  *        dBeta
+		+ nodes[3*3+0] * (1.0 - dAlpha) *        dBeta;
+
+	double dYc =
+		  nodes[0*3+1] * (1.0 - dAlpha) * (1.0 - dBeta)
+		+ nodes[1*3+1] *        dAlpha  * (1.0 - dBeta)
+		+ nodes[2*3+1] *        dAlpha  *        dBeta
+		+ nodes[3*3+1] * (1.0 - dAlpha) *        dBeta;
+
+	double dZc =
+		  nodes[0*3+2] * (1.0 - dAlpha) * (1.0 - dBeta)
+		+ nodes[1*3+2] *        dAlpha  * (1.0 - dBeta)
+		+ nodes[2*3+2] *        dAlpha  *        dBeta
+		+ nodes[3*3+2] * (1.0 - dAlpha) *        dBeta;
+
+	double dR = sqrt(dXc * dXc + dYc * dYc + dZc * dZc);
+
+	// Mapped node location
+	node[0] = dXc / dR;
+	node[1] = dYc / dR;
+	node[2] = dZc / dR;
+
+
+	// Pointwise basis vectors in Cartesian geometry
+	CartVect dDx1F(
+		(1.0 - dBeta) * (nodes[1*3+0] - nodes[0*3+0])
+		+      dBeta  * (nodes[2*3+0] - nodes[3*3+0]),
+		(1.0 - dBeta) * (nodes[1*3+1] - nodes[0*3+1])
+		+      dBeta  * (nodes[2*3+1] - nodes[3*3+1]),
+		(1.0 - dBeta) * (nodes[1*3+2] - nodes[0*3+2])
+		+      dBeta  * (nodes[2*3+2] - nodes[3*3+2]));
+
+	CartVect dDx2F(
+		(1.0 - dAlpha) * (nodes[3*3+0] - nodes[0*3+0])
+		+      dAlpha  * (nodes[2*3+0] - nodes[1*3+0]),
+		(1.0 - dAlpha) * (nodes[3*3+1] - nodes[0*3+1])
+		+      dAlpha  * (nodes[2*3+1] - nodes[1*3+1]),
+		(1.0 - dAlpha) * (nodes[3*3+2] - nodes[0*3+2])
+		+      dAlpha  * (nodes[2*3+2] - nodes[1*3+2]));
+
+	// Pointwise basis vectors in spherical geometry
+	double dDenomTerm = 1.0 / (dR * dR * dR);
+
+	if (dDx1G) {
+		*dDx1G = dDenomTerm * CartVect(
+			- dXc * (dYc * dDx1F[1] + dZc * dDx1F[2])
+				+ (dYc * dYc + dZc * dZc) * dDx1F[0],
+			- dYc * (dXc * dDx1F[0] + dZc * dDx1F[2])
+				+ (dXc * dXc + dZc * dZc) * dDx1F[1],
+			- dZc * (dXc * dDx1F[0] + dYc * dDx1F[1])
+			+ (dXc * dXc + dYc * dYc) * dDx1F[2]);
+	}
+
+	if (dDx2G) {
+		*dDx2G = dDenomTerm * CartVect(
+			- dXc * (dYc * dDx2F[1] + dZc * dDx2F[2])
+				+ (dYc * dYc + dZc * dZc) * dDx2F[0],
+			- dYc * (dXc * dDx2F[0] + dZc * dDx2F[2])
+				+ (dXc * dXc + dZc * dZc) * dDx2F[1],
+			- dZc * (dXc * dDx2F[0] + dYc * dDx2F[1])
+			+ (dXc * dXc + dYc * dYc) * dDx2F[2]);
+    }
+
+    return moab::MB_SUCCESS;
+}
+
+
+double Remapper_GenerateFEMetaData(
+    Interface* mb,
+    EntityHandle face,
+    const std::vector<double>& dG,
+    const std::vector<double>& dW,
+	std::vector<double> & dataGLLJacobian
+) {
+    constexpr bool fNoBubble = false;
+
+    const int nP = dG.size();
+
+
+	// Initialize data structures
+	dataGLLJacobian.resize(nP * nP);
+
+	// Write metadata
+    const EntityHandle* connectivity;
+    int nConnectivity;
+    MB_CHK_SET_ERR(mb->get_connectivity(face, connectivity, nConnectivity, true), "Failed to get connectivity");
+
+    if (nP != 4 || nConnectivity != 4) {
+        MB_CHK_SET_ERR(MB_FAILURE, "Mesh must only contain quadrilateral elements");
+    }
+
+    double nConnCoords[12]; // 4 nodes, 3D coordinates
+    MB_CHK_SET_ERR(mb->get_coords(connectivity, nConnectivity, nConnCoords), "Failed to get coordinates");
+
+    double dFaceNumericalArea = 0.0;
+
+    for (int j = 0; j < nP; j++) {
+        for (int i = 0; i < nP; i++) {
+
+            // Get local map vectors
+            CartVect nodeGLL;
+            CartVect dDx1G;
+            CartVect dDx2G;
+
+            Remapper_ApplyLocalMap(
+                mb,
+                nConnCoords,
+                dG[i],
+                dG[j],
+                nodeGLL,
+                &dDx1G,
+                &dDx2G);
+
+            // For continuous GLL determine the mapping from local node index to global index
+            // if (fContinuousGLL) {
+
+            //     // Determine if this is a unique Node
+            //     std::map<Node, int>::const_iterator iter = mapNodes.find(nodeGLL);
+            //     if (iter == mapNodes.end()) {
+
+            //         // Insert new unique node into map
+            //         int ixNode = static_cast<int>(mapNodes.size());
+            //         mapNodes.insert(std::pair<Node, int>(nodeGLL, ixNode));
+            //         dataGLLnodes[j][i][k] = ixNode + 1;
+
+            //     } else {
+            //         dataGLLnodes[j][i][k] = iter->second + 1;
+            //     }
+
+            // } else {
+            //     dataGLLnodes[j][i][k] = ixNode;
+            //     ixNode++;
+            // }
+
+            // Cross product gives local Jacobian
+            CartVect nodeCross = dDx1G * dDx2G;
+
+            // Element area weighted by local GLL weights
+            const double dJacobian = nodeCross.length() * dW[i] * dW[j];
+            if (dJacobian <= 0.0) {
+                MB_CHK_SET_ERR(MB_FAILURE, "Nonpositive Jacobian detected");
+            }
+
+            dFaceNumericalArea += dJacobian;
+
+            dataGLLJacobian[j * nP + i] = dJacobian;
+        }
+    }
+
+
+    // Apply bubble adjustment to area
+    if (!fNoBubble) {
+
+        const double vecFaceArea = dFaceNumericalArea;
+        // mesh.CalculateFaceAreas(false);
+        // call IntxUtils calculate face areas using quadrature
+
+        if (dFaceNumericalArea != vecFaceArea) {
+        // Use uniform bubble for linear elements
+            if (nP < 3) {
+                double dMassDifference = vecFaceArea - dFaceNumericalArea;
+                for (int j = 0; j < nP; j++) {
+                    for (int i = 0; i < nP; i++) {
+                        dataGLLJacobian[j * nP + i] +=
+                            dMassDifference * dW[i] * dW[j];
+                    }
+                }
+
+                dFaceNumericalArea += dMassDifference;
+
+            // Use HOMME bubble for higher order elements
+            } else {
+                double dMassDifference = vecFaceArea - dFaceNumericalArea;
+
+                double dInteriorMassSum = 0;
+                for (int i = 1; i < nP-1; i++) {
+                    for (int j = 1; j < nP-1; j++) {
+                            dInteriorMassSum += dataGLLJacobian[j * nP + i];
+                    }
+                }
+
+                // Check that dInteriorMassSum is not too small
+                if (std::abs(dInteriorMassSum) < 1e-15) {
+                    MB_CHK_SET_ERR(MB_FAILURE, "--bubble correction cannot be performed, "
+                        "sum of inner weights is too small");
+                }
+
+                dInteriorMassSum = dMassDifference / dInteriorMassSum;
+                for (int j = 1; j < nP-1; j++) {
+                    for (int i = 1; i < nP-1; i++) {
+                        dataGLLJacobian[j * nP + i] *= (1.0 + dInteriorMassSum);
+                    }
+                }
+
+                dFaceNumericalArea += dMassDifference;
+            }
+        }
+    }
+
+    // Return the compute area from element
+	return dFaceNumericalArea;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// ----------------------
+// KD-tree point cloud
+// ----------------------
+struct MOABCentroidCloud
+{
+    constexpr static int DIM = 3;
+    std::vector< std::array< double, DIM > > points;
+    std::vector< moab::EntityHandle > elements;
+
+    inline void init( size_t length )
+    {
+        points.reserve( length );
+        elements.reserve( length );
+    }
+
+    inline size_t kdtree_get_point_count() const
+    {
+        return points.size();
+    }
+
+    inline double kdtree_get_pt( const size_t idx, const size_t dim ) const
+    {
+        return points[idx][dim];
+    }
+
+    template < class BBOX >
+    bool kdtree_get_bbox( BBOX& ) const
+    {
+        return false;
+    }
+};
+
+using MOABKDTree = nanoflann::KDTreeSingleIndexAdaptor< nanoflann::L2_Simple_Adaptor< ParallelPointCloudReader::CoordinateType, MOABCentroidCloud, ParallelPointCloudReader::CoordinateType >,
+                                                    MOABCentroidCloud,  // DatasetAdaptor
+                                                    3,                  // 3D
+                                                    size_t              // IndexType
+                                                    >;
+
+// ----------------------
+// Radius search wrapper
+// ----------------------
+std::vector< size_t > radius_search_kdtree( const MOABKDTree& tree,
+                                            const MOABCentroidCloud& cloud,
+                                            const std::array< ParallelPointCloudReader::CoordinateType, 3 >& query_pt,
+                                            ParallelPointCloudReader::CoordinateType radius )
+{
+    ParallelPointCloudReader::CoordinateType radius_sq = radius * radius;
+    // ParallelPointCloudReader::CoordinateType radius_sq = radius;
+    std::vector< nanoflann::ResultItem< size_t, ParallelPointCloudReader::CoordinateType > > matches;
+    nanoflann::SearchParameters params;
+    params.sorted = true;
+
+    const ParallelPointCloudReader::CoordinateType query_pt_sq = query_pt[0] * query_pt[0] + query_pt[1] * query_pt[1] + query_pt[2] * query_pt[2];
+    assert( query_pt_sq > 1.0 - 1e-10 && query_pt_sq < 1.0 + 1.0e-10 ); // Check if the point is on the unit sphere
+
+    tree.radiusSearch( query_pt.data(), radius_sq, matches, params );
+
+    std::vector< size_t > found_elements;
+    if( !matches.empty() )
+    {
+        // Return all matches within the radius
+        for( const auto& match : matches )
+            found_elements.emplace_back( cloud.elements[match.first] );
+    }
+    else
+    {
+        // Fallback to nearest neighbor
+        size_t nearest_index;
+        ParallelPointCloudReader::CoordinateType nearest_dist_sq;
+        tree.knnSearch( query_pt.data(), 1, &nearest_index, &nearest_dist_sq );
+        found_elements.emplace_back( cloud.elements[nearest_index] );
+    }
+
+    return found_elements;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+// 3D Point Cloud adapter for KD-tree
+struct PointCloud3D {
+    const std::vector<ParallelPointCloudReader::PointType3D>& points;
+    PointCloud3D(const std::vector<ParallelPointCloudReader::PointType3D>& pts) : points(pts) {}
+
+    size_t kdtree_get_point_count() const { return points.size(); }
+
+    ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
+        return points[idx][dim];
+    }
+
+    template <class BBOX> bool kdtree_get_bbox(BBOX&) const { return false; }
+};
+
+// PCSpectralProjectionRemapper Implementation
+PCSpectralProjectionRemapper::PCSpectralProjectionRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
+    : ScalarRemapper(interface, pcomm, mesh_set) {
+}
+
+ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
+    if (point_data.lonlat_coordinates.empty()) {
+        if (m_pcomm->rank() == 0) {
+            std::cout << "No point cloud data available for remapping" << std::endl;
+        }
+        return MB_SUCCESS;
+    }
+
+    // Validate that mesh contains only quadrilaterals
+    // MB_CHK_ERR(validate_quadrilateral_mesh());
+
+    // Build KD-tree for fast nearest neighbor queries
+    if (!m_kdtree_built) {
+        MB_CHK_ERR(this->build_kdtree(point_data));
+    }
+
+    std::cout.flush();
+
+    if (m_pcomm->rank() == 0) {
+        std::cout << "Starting PC averaged spectral projection with " << point_data.lonlat_coordinates.size()
+                  << " point cloud points and spectral order " << m_config.spectral_order << std::endl;
+    }
+
+    // Project point cloud data to all spectral elements
+    MB_CHK_ERR(project_point_cloud_to_spectral_elements(point_data));
+
+    return MB_SUCCESS;
+}
+
+ErrorCode PCSpectralProjectionRemapper::validate_quadrilateral_mesh() {
+    // Check that all elements are quadrilaterals
+    for (EntityHandle element : m_mesh_data.elements) {
+        const EntityHandle* connectivity;
+        int nConnectivity;
+        MB_CHK_ERR(m_interface->get_connectivity(element, connectivity, nConnectivity, true));
+
+        if (nConnectivity != 4) {
+            if (m_pcomm->rank() == 0) {
+                std::cerr << "Error: Spectral element projection requires quadrilateral mesh elements. "
+                          << "Found element with " << nConnectivity << " vertices." << std::endl;
+            }
+            return MB_FAILURE;
+        }
+    }
+
+    if (m_pcomm->rank() == 0) {
+        std::cout << "Validated " << m_mesh_data.elements.size() << " quadrilateral elements for spectral projection" << std::endl;
+    }
+
+    return MB_SUCCESS;
+}
+
+ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements(
+    const ParallelPointCloudReader::PointData& point_data) {
+
+    if (m_pcomm->rank() == 0) {
+        std::cout << "Performing spectral element projection with " << point_data.lonlat_coordinates.size()
+                  << " point cloud points" << std::endl;
+    }
+
+    const int nP = m_config.spectral_order;
+
+    // Build KD-tree from point cloud data for fast spatial searches
+    // if (m_pcomm->rank() == 0) {
+    //     std::cout << "Building KD-tree for " << point_data.lonlat_coordinates.size() << " points" << std::endl;
+    // }
+
+    // Pre-compute all 3D points for KD-tree (parallelized coordinate conversion)
+//     std::vector<ParallelPointCloudReader::PointType3D> cartesian_points;
+//     cartesian_points.resize(point_data.lonlat_coordinates.size());
+
+//     // Parallel coordinate transformation
+// #pragma omp parallel for schedule(static)
+//     for (size_t i = 0; i < point_data.lonlat_coordinates.size(); ++i) {
+//         RLLtoXYZ_Deg(point_data.lonlat_coordinates[i][0], point_data.lonlat_coordinates[i][1], cartesian_points[i]);
+//     }
+
+    // Create 3D point cloud adapter for KD-tree
+    // PointCloud3D point_cloud_3d(cartesian_points);
+
+    // Build KD-tree
+    // using KDTree3D = nanoflann::KDTreeSingleIndexAdaptor<
+    //     nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloud3D, ParallelPointCloudReader::CoordinateType>,
+    //     PointCloud3D, 3, size_t>;
+
+    // KDTree3D kdtree(3, point_cloud_3d, nanoflann::KDTreeSingleIndexAdaptorParams(10));
+    // kdtree.buildIndex();
+
+    // if (m_pcomm->rank() == 0) {
+    //     std::cout << "Built KD-tree with " << point_cloud_3d.kdtree_get_point_count() << " points" << std::endl;
+    // }
+
+    if (m_pcomm->rank() == 0) {
+        // size_t valid_count = std::count(element_valid.begin(), element_valid.end(), true);
+        std::cout << "Processing " << m_mesh_data.elements.size() << " valid quadrilateral elements in parallel" << std::endl;
+    }
+
+    // Get GLL quadrature points and weights
+    std::vector<double> dG, dW;
+    MB_CHK_SET_ERR(GaussLobattoQuadrature::GetPoints(nP, dG, dW, 0.0, 1.0), "Failed to get GLL quadrature points and weights");
+
+    // Parallel processing of mesh elements
+    std::vector<ErrorCode> element_errors(m_mesh_data.elements.size(), MB_SUCCESS);
+
+#pragma omp parallel for schedule(dynamic, 1) shared(element_errors, m_kdtree, point_data)
+    for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
+        // if (!element_valid[elem_idx]) {
+        //     element_errors[elem_idx] = MB_FAILURE;
+        //     continue;
+        // }
+
+        if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
+            std::cout << "Processing element " << elem_idx << " of " << m_mesh_data.elements.size() << std::endl;
+        }
+
+        EntityHandle face = m_mesh_data.elements[elem_idx];
+        const EntityHandle* connectivity;
+        int nConnectivity;
+        m_interface->get_connectivity(face, connectivity, nConnectivity, true);
+
+        double nConnCoords[12]; // 4 nodes, 3D coordinates
+        m_interface->get_coords(connectivity, nConnectivity, nConnCoords);
+
+        // Generate GLL metadata for this face (thread-safe)
+        std::vector<double> dataGLLJacobian;
+
+        // Generate finite element metadata using existing function
+        double dNumericalArea = Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian);
+
+        // Thread-safe output for first element only (use atomic check)
+        static bool first_output_done = false;
+        if (!first_output_done && m_pcomm->rank() == 0) {
+            #pragma omp critical
+            {
+                if (!first_output_done) {
+                    std::cout << "GLL Jacobian size: " << dataGLLJacobian.size() << std::endl;
+                    first_output_done = true;
+                }
+            }
+        }
+
+        // Initialize element-averaged values (thread-local)
+        std::unordered_map<std::string, double> element_averages_d;
+        // std::unordered_map<std::string, int> element_averages_i;
+        double total_weight = 0.0;
+
+        // Pre-compute all GLL node coordinates for this element (vectorizable)
+        std::vector<bool> gll_valid(nP * nP, false);
+
+        // Process all GLL nodes for this element
+        for (int j = 0; j < nP; j++) {
+            for (int i = 0; i < nP; i++) {
+                int gll_idx = j * nP + i;
+                // if (!gll_valid[gll_idx]) continue;
+                CartVect nodeGLL;
+                ErrorCode rval = Remapper_ApplyLocalMap(m_interface, nConnCoords,
+                                                        dG[i], dG[j], nodeGLL);
+                if (MB_SUCCESS != rval) {
+                    gll_valid[gll_idx] = false;
+                    continue;
+                }
+
+                // const CartVect& nodeGLL = gll_nodes[gll_idx];
+
+                // Convert to PointType3D for comparison
+                ParallelPointCloudReader::PointType3D gll_point = {
+                    static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[0]),
+                    static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[1]),
+                    static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[2])
+                };
+
+                // Optimized KD-tree search with thread-local storage
+                thread_local std::vector<size_t> neighbor_indices;
+                thread_local std::vector<ParallelPointCloudReader::CoordinateType> distances_sq;
+                thread_local std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> matches;
+
+                neighbor_indices.clear();
+                distances_sq.clear();
+                matches.clear();
+
+                // Compute weighted average from neighboring points (vectorized)
+                const double gll_weight = dataGLLJacobian[gll_idx]; // Element 0 since we process one face at a time
+                const ParallelPointCloudReader::CoordinateType search_radius = gll_weight * gll_weight; // Element 0 since we process one face at a time
+                const size_t max_neighbors = 10;
+
+                // Convert GLL point to query format (aligned for SIMD)
+                // alignas(16) ParallelPointCloudReader::CoordinateType query_pt[3] = {gll_point[0], gll_point[1], gll_point[2]};
+
+
+                // const ParallelPointCloudReader::PointType3D& centroid = m_mesh_data.centroids[elem_idx];
+
+                // auto nearest_point = find_nearest_point(centroid, point_data);
+                // size_t nearest_point_idx = nearest_point.first;
+                // ParallelPointCloudReader::CoordinateType min_distance = nearest_point.second;
+
+                // if (nearest_point_idx != static_cast<size_t>(-1)) {
+                //     // Copy scalar values from nearest point to mesh element
+                //     for (const auto& var_name : m_config.scalar_var_names) {
+                //         auto var_it = point_data.d_scalar_variables.find(var_name);
+                //         if (var_it != point_data.d_scalar_variables.end() &&
+                //             nearest_point_idx < var_it->second.size()) {
+                //             m_mesh_data.d_scalar_fields[var_name][elem_idx] = var_it->second[nearest_point_idx];
+                //             if (elem_idx < 10) {
+                //                 std::cout << "Double Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << var_it->second[nearest_point_idx] << std::endl;
+                //             }
+                //         }
+                //         else {
+                //             auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                //             if (ivar_it != point_data.i_scalar_variables.end() &&
+                //                 nearest_point_idx < ivar_it->second.size()) {
+                //                 m_mesh_data.i_scalar_fields[var_name][elem_idx] = ivar_it->second[nearest_point_idx];
+                //             }
+                //             if (elem_idx < 10) {
+                //                 std::cout << "Integer Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << ivar_it->second[nearest_point_idx] << std::endl;
+                //             }
+                //         }
+                //     }
+                // }
+                // else {
+                //     std::cout << m_pcomm->rank() << ": No nearest point found for element " << elem_idx << std::endl;
+                // }
+
+
+                // Simple nearest neighbor search
+                std::vector<size_t> ret_index(max_neighbors);
+                std::vector<ParallelPointCloudReader::CoordinateType> out_dist_sqr(max_neighbors);
+                nanoflann::KNNResultSet<ParallelPointCloudReader::CoordinateType> result_set(max_neighbors);
+                result_set.init(ret_index.data(), out_dist_sqr.data());
+
+                m_kdtree->findNeighbors(result_set, gll_point.data(), nanoflann::SearchParameters());
+
+                // Radius search using KD-tree (thread-safe read-only access)
+                nanoflann::SearchParameters params;
+                params.sorted = true;
+
+                size_t found_count = m_kdtree->radiusSearch(gll_point.data(), search_radius, matches, params);
+                // size_t found_count = 0;
+
+                if (found_count > 0) {
+                    // Use radius search results (vectorized copy)
+                    size_t use_count = std::min(found_count, max_neighbors);
+                    neighbor_indices.reserve(use_count);
+                    distances_sq.reserve(use_count);
+
+                    // Vectorized extraction of indices and distances
+                    for (size_t k = 0; k < use_count; ++k) {
+                        neighbor_indices.push_back(matches[k].first);
+                        distances_sq.push_back(matches[k].second);
+                    }
+                } else {
+                    // Fallback to nearest neighbor
+                    // size_t nearest_idx;
+                    // ParallelPointCloudReader::CoordinateType nearest_dist_sq;
+                    // m_kdtree->knnSearch(gll_point.data(), 1, &nearest_idx, &nearest_dist_sq);
+                    // size_t nearest_idx = find_nearest_point(gll_point, point_data);
+
+                    auto nearest_point = find_nearest_point(gll_point, point_data);
+                    size_t nearest_idx = nearest_point.first;
+                    ParallelPointCloudReader::CoordinateType nearest_dist_sq = nearest_point.second * nearest_point.second;
+
+                    neighbor_indices.push_back(nearest_idx);
+                    distances_sq.push_back(nearest_dist_sq);
+                }
+
+                // Pre-compute inverse distance weights (vectorizable)
+                thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights;
+                inv_weights.resize(neighbor_indices.size());
+
+                // Vectorized distance and weight computation
+                #pragma omp simd
+                for (size_t k = 0; k < neighbor_indices.size(); ++k) {
+                    ParallelPointCloudReader::CoordinateType distance = std::sqrt(distances_sq[k]);
+                    inv_weights[k] = 1.0 / (distance + 1e-10);
+                }
+
+                // Process each scalar variable
+                for (const auto& var_name : m_config.scalar_var_names) {
+                    double weighted_sum = 0.0;
+                    double weight_sum = 0.0;
+
+                    // Check if it's a double variable
+                    auto var_it = point_data.d_scalar_variables.find(var_name);
+                    if (var_it != point_data.d_scalar_variables.end()) {
+                        const auto& values = var_it->second;
+
+                        // Vectorized weighted sum computation
+                        #pragma omp simd reduction(+:weighted_sum,weight_sum)
+                        for (size_t k = 0; k < neighbor_indices.size(); ++k) {
+                            size_t pt_idx = neighbor_indices[k];
+                            if (pt_idx < values.size()) {
+                                ParallelPointCloudReader::CoordinateType weight = inv_weights[k];
+                                weighted_sum += weight * values[pt_idx];
+                                weight_sum += weight;
+                            }
+                        }
+                    } else {
+                        // Check if it's an integer variable
+                        auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                        if (ivar_it != point_data.i_scalar_variables.end()) {
+                            const auto& values = ivar_it->second;
+
+                            // Vectorized weighted sum computation for integers
+                            #pragma omp simd reduction(+:weighted_sum,weight_sum)
+                            for (size_t k = 0; k < neighbor_indices.size(); ++k) {
+                                size_t pt_idx = neighbor_indices[k];
+                                if (pt_idx < values.size()) {
+                                    ParallelPointCloudReader::CoordinateType weight = inv_weights[k];
+                                    weighted_sum += weight * static_cast<double>(values[pt_idx]);
+                                    weight_sum += weight;
+                                }
+                            }
+                        }
+                    }
+
+                    // Add GLL-weighted contribution to element average
+                    if (weight_sum > 0.0) {
+                        double gll_value = weighted_sum / weight_sum;
+                        element_averages_d[var_name] += gll_weight * gll_value;
+                    }
+                }
+
+                total_weight += gll_weight;
+            }
+        }
+
+        // Normalize element averages and store in mesh data (thread-safe writes)
+        if (total_weight > 0.0) {
+            const double inv_total_weight = 1.0 / total_weight; // Avoid division in loop
+            for (const auto& var_name : m_config.scalar_var_names) {
+                auto it = element_averages_d.find(var_name);
+                if (it != element_averages_d.end()) {
+                    // if (m_is_usgs_format) {
+                    //     m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second * inv_total_weight);
+                    // } else {
+                    //     m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
+                    // }
+                    {
+                        auto var_it = point_data.d_scalar_variables.find(var_name);
+                        if (var_it != point_data.d_scalar_variables.end()) {
+                            m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
+                            if (elem_idx < 10) {
+                                std::cout << "Double Data (" << var_name << ") at nearest neighbor elements is " << m_mesh_data.d_scalar_fields[var_name][elem_idx] << std::endl;
+                            }
+                        }
+                        else {
+                            auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                            if (ivar_it != point_data.i_scalar_variables.end()) {
+                                m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second *inv_total_weight);
+                            }
+                            if (elem_idx < 10) {
+                                std::cout << "Integer Data (" << var_name << ") at nearest neighbor elements is " << m_mesh_data.i_scalar_fields[var_name][elem_idx] << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            element_errors[elem_idx] = MB_FAILURE;
+        }
+    } // End of parallel region
+
+    // Check for errors after parallel processing
+    size_t error_count = 0;
+    for (size_t i = 0; i < element_errors.size(); ++i) {
+        if (element_errors[i] != MB_SUCCESS) {
+            error_count++;
+        }
+    }
+
+    if (error_count > 0 && m_pcomm->rank() == 0) {
+        std::cout << "Warning: " << error_count << " elements failed processing out of "
+                  << m_mesh_data.elements.size() << " total elements" << std::endl;
+    }
+
+    return MB_SUCCESS;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+// NOTE: This function is from TempestRemap and needs significant adaptation
+// The functionality is now implemented in PCSpectralProjectionRemapper class
+/*
+moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >& dataGLLNodalArea )
+{
+    // Order of the finite element method
+    constexpr int nP = 4;
+
+    // GLL quadrature nodes
+    std::vector< double > dG;
+    std::vector< double > dW;
+
+    GaussLobattoQuadrature::GetPoints( nP, 0.0, 1.0, dG, dW );
+
+	// Number of Faces
+    std::vector<EntityHandle> faces;
+    // mb->get_entities_by_dimension(m_mesh_set, 2, faces);
+
+
+    // Initialize coordinates for map
+    // mapRemap.InitializeTargetCoordinatesFromMeshFE(
+    //     meshTarget, optsAlg.nPout, dataGLLNodes);
+
+    // Generate the continuous Jacobian
+    constexpr bool fContinuous = true;
+
+    if (fContinuous) {
+        GenerateUniqueJacobian(
+            dataGLLNodes,
+            dataGLLJacobian,
+            mapRemap.GetTargetAreas());
+
+    } else {
+        GenerateDiscontinuousJacobian(
+            dataGLLJacobian,
+            mapRemap.GetTargetAreas());
+    }
+
+    // Announcements
+    moab::DebugOutput dbgprint( std::cout, this->rank, 0 );
+    dbgprint.set_prefix( "[LinearRemapFVtoSE_Averaged]: " );
+    if( is_root )
+    {
+        dbgprint.printf( 0, "Finite Volume to Spectral Element Projection\n" );
+    }
+
+    DataArray3D<int> dataGLLNodes;
+    DataArray3D<double> dataGLLJacobian;
+    {
+        AnnounceStartBlock("Generating output mesh meta data");
+        double dNumericalArea =
+            Remapper_GenerateFEMetaData(
+                mb,
+                face,
+                dG, dW,
+                dataGLLJacobian);
+
+        Announce("Output Mesh Numerical Area: %1.15e", dNumericalArea);
+        AnnounceEndBlock(NULL);
+    }
+
+
+    // Loop through all faces on meshInput
+    const unsigned outputFrequency = ( m_meshOutput->faces.size() / 10 ) + 1;
+
+    MOABCentroidCloud cloud;
+    {
+        // Initialize the kd-tree
+        cloud.init( source_vertices.size() );
+
+        std::vector<double> srccoords(source_vertices.size() * 3);
+        MB_CHK_ERR( m_interface->get_coords( source_vertices, srccoords.data() ) );
+
+        // Loop through all elements and add to the tree
+        for( size_t ielem = 0; ielem < source_vertices.size(); ielem++ )
+        {
+            const size_t offset = ielem * 3;
+            const double query_pt_sq =
+                std::sqrt( srccoords[offset] * srccoords[offset] + srccoords[offset+1] * srccoords[offset+1] + srccoords[offset+2] * srccoords[offset+2] );
+
+            // Rescale the coordinates to the unit sphere and add to the point cloud
+            cloud.points.emplace_back( std::array< double, 3 >( { srccoords[offset]/query_pt_sq, srccoords[offset+1]/query_pt_sq, srccoords[offset+2]/query_pt_sq } ) );
+
+            // Get the vertex index
+            cloud.elements.emplace_back( ielem );
+        }
+    }
+
+    // if( is_root ) dbgprint.printf( 0, "Building Kd-tree now..." );
+    KDTree tree( 3, cloud, nanoflann::KDTreeSingleIndexAdaptorParams( 10 ) );
+    tree.buildIndex();
+    // if( is_root ) dbgprint.printf( 0, "Finished building Kd-tree index..." );
+    for( size_t ixOutput = 0; ixOutput < m_meshOutput->faces.size(); ixOutput++ )
+    {
+        // Output every 1000 elements
+// #ifdef VERBOSE
+        if( ixOutput % outputFrequency == 0 && is_root )
+        {
+            dbgprint.printf( 0, "Element %zu/%lu\n", ixOutput, m_meshOutput->faces.size() );
+        }
+// #endif
+        // This Face
+        const Face& faceSecond = m_meshOutput->faces[ixOutput];
+
+        // Area of the First Face
+        // double dSecondArea = m_meshOutput->vecFaceArea[ixOutput];
+        // Node nodecenter = GetFaceCentroid( faceSecond, m_meshOutput->nodes );
+
+        for( int p = 0; p < nP; p++ )
+        {
+            for( int q = 0; q < nP; q++ )
+            {
+                int ixOutputGlobal;
+                if( fContinuous )
+                    ixOutputGlobal = dataGLLNodes[p][q][ixOutput] - 1;
+                else
+                    ixOutputGlobal = ixOutput * nP * nP + p * nP + q;
+
+                // Coordinate of the GLL point
+                // Node nodeRef = m_meshOutput->nodes[ixOutputGlobal];
+
+                Node nodeRef;
+                ApplyLocalMap( faceSecond, m_meshOutput->nodes, dG[p], dG[q], nodeRef );
+
+                const std::array< double, 3 > query = { nodeRef.x, nodeRef.y, nodeRef.z };
+
+                // The radius for the search is the sqrt of the Jacobian
+                const double radius = std::sqrt( dataGLLJacobian[p][q][ixOutput] );
+
+                std::cout << "Searching elements within radius " << radius
+                          << " for query point: " << query[0] << ", " << query[1] << ", " << query[2] << "\n";
+                // Now let us search for the nearest elements within search radius
+                auto results = radius_search_kdtree( tree, cloud, query, radius );
+
+                // Find how many elements were found
+                size_t nResults = results.size();
+
+                // Newton-Cotes equal-weight method
+                // const double dWeight  = dataGLLNodalArea[ixOutput] / nResults;
+                const double dWeight = 1.0 / nResults;
+
+                if (nResults == 0)
+                {
+                    printf( "No elements found within radius %f for query point: %f, %f, %f",
+                                 radius, query[0], query[1], query[2] );
+                    MB_CHK_SET_ERR( moab::MB_FAILURE, "No elements found within radius" );
+                }
+
+                for( auto ixFirstElement : results )
+                {
+                    std::cout << ixFirstElement << "\tFound " << nResults << " elements within radius " << radius
+                                << " for query point: " << query[0] << ", " << query[1] << ", " << query[2] << "\n";
+                    // std::cout << "\t[ " << ixOutputGlobal << "] Found association of point " << query[0] << ", "
+                    //           << query[1] << ", " << query[2] << " to " << ixFirstElement << "\n";
+                    if ( ixFirstElement < 0 || ixFirstElement >= source_vertices.size() )
+                    {
+                        printf( "Logic error: source element has to be between 0 and %d, but received %d for row %d\n",
+                                     source_vertices.size(), ixFirstElement, ixOutputGlobal );
+                        MB_CHK_SET_ERR( moab::MB_FAILURE, "Logic error: source element has to be between 0 and %d, but received %d for row %d\n",
+                                     source_vertices.size(), ixFirstElement, ixOutputGlobal );
+                    }
+                    smatMap( ixOutputGlobal, ixFirstElement ) += dWeight;
+                }
+            }
+        }
+    }
+
+    return moab::MB_SUCCESS;
+}
+*/
 
 } // namespace moab

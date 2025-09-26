@@ -6,6 +6,9 @@
 #include "moab/ParallelComm.hpp"
 #include "moab/ErrorHandler.hpp"
 #include "nanoflann.hpp"
+// #include "DataArray1D.h"
+#include "DataArray3D.h"
+#include "GaussLobattoQuadrature.hpp"
 #include <array>
 #include <vector>
 #include <map>
@@ -14,7 +17,45 @@
 
 namespace moab {
 
-// KD-tree functionality re-enabled using nanoflann for fast nearest neighbor queries
+// KD-tree functionality enabled using nanoflann for fast nearest neighbor queries
+
+/**
+ * @brief Point cloud adapter for nanoflann KD-tree
+ */
+struct PointCloudAdapter {
+    std::vector<ParallelPointCloudReader::PointType3D> points;
+
+    PointCloudAdapter(const std::vector<ParallelPointCloudReader::PointType>& pts) {
+        points.resize(pts.size());
+#pragma omp parallel for shared(points)
+        for (size_t i = 0; i < pts.size(); ++i) {
+            RLLtoXYZ_Deg(pts[i][0], pts[i][1], points[i]);
+            // points[i][0] = pts[i][0];
+            // points[i][1] = pts[i][1];
+        }
+    }
+
+    // Must return the number of data points
+    inline size_t kdtree_get_point_count() const { return points.size(); }
+
+    // Returns the dim'th component of the idx'th point in the class
+    inline ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
+        return points[idx][dim];
+    }
+
+    // Optional bounding-box computation: return false to default to a standard bbox computation loop
+    template <class BBOX>
+    bool kdtree_get_bbox(BBOX& /* bb */) const { return false; }
+};
+
+// Define the KD-tree type with explicit template parameters
+typedef nanoflann::KDTreeSingleIndexAdaptor<
+    // nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
+    nanoflann::SO3_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
+    PointCloudAdapter,
+    3, /* dim */
+    size_t /* IndexType */
+> KDTree;
 
 /**
  * @brief Abstract base class for remapping scalar data from point clouds to mesh elements
@@ -33,6 +74,11 @@ public:
         bool use_element_centroids = true;          // Use element centroids vs vertices
         bool normalize_weights = true;              // Normalize interpolation weights
         bool is_usgs_format = false;                 // Use USGS format for point cloud
+
+        // Spectral element projection parameters
+        int spectral_order = 4;                     // Spectral element order (nP)
+        bool continuous_gll = true;                 // Use continuous GLL nodes
+        bool apply_bubble_correction = false;       // Apply bubble correction for mass conservation
     };
 
     struct MeshData {
@@ -74,45 +120,17 @@ protected:
     // Validation and statistics
     ErrorCode validate_remapping_results();
     void print_remapping_statistics();
+
+    std::pair<size_t, ParallelPointCloudReader::CoordinateType>  find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
+                          const ParallelPointCloudReader::PointData& point_data, int max_neighbors = 1);
+
+    // KD-tree members for fast nearest neighbor queries
+    std::unique_ptr<PointCloudAdapter> m_adapter;
+    std::unique_ptr<KDTree> m_kdtree;
+    bool m_kdtree_built;
+
+    ErrorCode build_kdtree(const ParallelPointCloudReader::PointData& point_data);
 };
-
-/**
- * @brief Point cloud adapter for nanoflann KD-tree
- */
-struct PointCloudAdapter {
-    std::vector<ParallelPointCloudReader::PointType3D> points;
-
-    PointCloudAdapter(const std::vector<ParallelPointCloudReader::PointType>& pts) {
-        points.resize(pts.size());
-#pragma omp parallel for shared(points)
-        for (size_t i = 0; i < pts.size(); ++i) {
-            RLLtoXYZ_Deg(pts[i][0], pts[i][1], points[i]);
-            // points[i][0] = pts[i][0];
-            // points[i][1] = pts[i][1];
-        }
-    }
-
-    // Must return the number of data points
-    inline size_t kdtree_get_point_count() const { return points.size(); }
-
-    // Returns the dim'th component of the idx'th point in the class
-    inline ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
-        return points[idx][dim];
-    }
-
-    // Optional bounding-box computation: return false to default to a standard bbox computation loop
-    template <class BBOX>
-    bool kdtree_get_bbox(BBOX& /* bb */) const { return false; }
-};
-
-// Define the KD-tree type with explicit template parameters
-typedef nanoflann::KDTreeSingleIndexAdaptor<
-    // nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
-    nanoflann::SO3_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
-    PointCloudAdapter,
-    3, /* dim */
-    size_t /* IndexType */
-> KDTree;
 
 /**
  * @brief Nearest neighbor remapping implementation
@@ -129,15 +147,15 @@ protected:
     ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
 
 private:
-    size_t find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
-                          const ParallelPointCloudReader::PointData& point_data);
+    // size_t find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
+    //                       const ParallelPointCloudReader::PointData& point_data);
 
-    // KD-tree members for fast nearest neighbor queries
-    std::unique_ptr<PointCloudAdapter> m_adapter;
-    std::unique_ptr<KDTree> m_kdtree;
-    bool m_kdtree_built;
+    // // KD-tree members for fast nearest neighbor queries
+    // std::unique_ptr<PointCloudAdapter> m_adapter;
+    // std::unique_ptr<KDTree> m_kdtree;
+    // bool m_kdtree_built;
 
-    ErrorCode build_kdtree(const ParallelPointCloudReader::PointData& point_data);
+    // ErrorCode build_kdtree(const ParallelPointCloudReader::PointData& point_data);
 };
 
 /**
@@ -167,11 +185,34 @@ private:
 };
 
 /**
+ * @brief Point cloud to spectral element projection remapper
+ *
+ * Implements the LinearRemapFVtoGLL_Averaged algorithm for projecting point cloud data
+ * onto spectral element meshes using GLL quadrature points and KD-tree spatial searches.
+ */
+class PCSpectralProjectionRemapper : public ScalarRemapper {
+public:
+    PCSpectralProjectionRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
+
+protected:
+    ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
+
+private:
+    // Spectral element mesh validation
+    ErrorCode validate_quadrilateral_mesh();
+
+    // Point cloud to spectral element projection
+    ErrorCode project_point_cloud_to_spectral_elements(
+        const ParallelPointCloudReader::PointData& point_data);
+};
+
+/**
  * @brief Factory class for creating remapping instances
  */
 class RemapperFactory {
 public:
     enum RemapMethod {
+        PC_AVERAGED_SPECTRAL_PROJECTION,  // Default: Point cloud to spectral element projection
         NEAREST_NEIGHBOR,
         INVERSE_DISTANCE,
         BILINEAR,

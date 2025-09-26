@@ -6,7 +6,7 @@ ifeq ($(UNAME_S),Linux)
   MOAB_CXXFLAGS += -fopenmp -g -O2
   MOAB_LIBS_LINK += -fopenmp
 else # Darwin
-  MOAB_CXXFLAGS += -g -std=c++17 -Xpreprocessor -fopenmp -I/opt/homebrew/Cellar/libomp/21.1.0/include
+  MOAB_CXXFLAGS += -g -O3 -std=c++17 -Xpreprocessor -fopenmp -I/opt/homebrew/Cellar/libomp/21.1.0/include
   MOAB_LIBS_LINK += -L/opt/homebrew/Cellar/libomp/21.1.0/lib -lomp
 endif
 

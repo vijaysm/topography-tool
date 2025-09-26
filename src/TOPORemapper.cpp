@@ -136,9 +136,9 @@ int main(int argc, char* argv[]) {
                 std::cout << "\n=== Starting Scalar Remapping ===" << std::endl;
             }
 
-            // Create remapper (nearest neighbor by default)
+            // Create remapper (PC averaged spectral projection by default)
             auto remapper = RemapperFactory::create_remapper(
-                RemapperFactory::NEAREST_NEIGHBOR, mb, &pcomm, mesh_set);
+                RemapperFactory::PC_AVERAGED_SPECTRAL_PROJECTION, mb, &pcomm, mesh_set);
 
             if (remapper) {
                 // Configure remapping
@@ -149,6 +149,9 @@ int main(int argc, char* argv[]) {
                 remap_config.scalar_var_names = reader.get_config().scalar_var_names; // {"htopo", "landfract"};
                 remap_config.search_radius = 0.0;  // No search radius limit
                 remap_config.max_neighbors = 1;    // Nearest neighbor only
+                remap_config.spectral_order = 4;   // Spectral element order
+                remap_config.continuous_gll = true; // Use continuous GLL nodes
+                remap_config.apply_bubble_correction = false; // No bubble correction for now
                 remap_config.use_element_centroids = true;
                 remap_config.is_usgs_format = reader.is_usgs_format();
 

@@ -687,19 +687,19 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                         std::cout << "Reading variable '" << var_name << "' in chunks to avoid overflow." << std::endl;
                     }
 
-                    size_t lon_chunk_size = MAX_ELEMENTS_PER_CHUNK / nlons_count;
-                    if (lon_chunk_size == 0) lon_chunk_size = 1; // Ensure progress
+                    size_t lat_chunk_size = MAX_ELEMENTS_PER_CHUNK / nlons_count;
+                    if (lat_chunk_size == 0) lat_chunk_size = 1; // Ensure progress
 
-                    for (MPI_Offset lon_offset = 0; lon_offset < nlons_count; lon_offset += lon_chunk_size) {
-                        MPI_Offset current_lon_count = std::min(static_cast<MPI_Offset>(lon_chunk_size), nlons_count - lon_offset);
-                        size_t chunk_elements = current_lon_count * nlats_count;
+                    for (MPI_Offset lat_offset = 0; lat_offset < nlats_count; lat_offset += lat_chunk_size) {
+                        MPI_Offset current_lat_count = std::min(static_cast<MPI_Offset>(lat_chunk_size), nlats_count - lat_offset);
+                        size_t chunk_elements = current_lat_count * nlons_count;
                         if (m_pcomm->rank() == 0) {
-                            std::cout << "\tReading chunk from " << nlons_start+lon_offset << " to " << nlons_start+lon_offset+current_lon_count << "." << std::endl;
+                            std::cout << "\tReading latitude chunk from " << nlats_start + lat_offset << " to " << nlats_start + lat_offset + current_lat_count << "." << std::endl;
                         }
 
                         std::vector<T> chunk_buffer(chunk_elements);
-                        start = {nlats_start, nlons_start + lon_offset};
-                        read_count = {nlats_count, current_lon_count};
+                        start = {nlats_start + lat_offset, nlons_start};
+                        read_count = {current_lat_count, nlons_count};
 
                         var.getVar_all(start, read_count, chunk_buffer.data());
                         temp_buffer.insert(temp_buffer.end(), chunk_buffer.begin(), chunk_buffer.end());
