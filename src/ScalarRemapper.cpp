@@ -1,5 +1,6 @@
 #include "ScalarRemapper.hpp"
 #include "moab/CartVect.hpp"
+#include "moab/IntxMesh/IntxUtils.hpp"
 #include "GaussLobattoQuadrature.hpp"
 #include <iostream>
 #include <cmath>
@@ -656,10 +657,9 @@ double Remapper_GenerateFEMetaData(
     EntityHandle face,
     const std::vector<double>& dG,
     const std::vector<double>& dW,
-	std::vector<double> & dataGLLJacobian
+	std::vector<double> & dataGLLJacobian,
+    const bool apply_bubble_correction = false
 ) {
-    constexpr bool fNoBubble = false;
-
     const int nP = dG.size();
 
 	// Initialize data structures
@@ -673,6 +673,9 @@ double Remapper_GenerateFEMetaData(
     if (nP != 4 || nConnectivity != 4) {
         MB_CHK_SET_ERR(MB_FAILURE, "Mesh must only contain quadrilateral elements");
     }
+
+    // Default area_method = lHuiller; Options: Girard, lHuiller, GaussQuadrature (if TR is available)
+    moab::IntxAreaUtils areaAdaptor( moab::IntxAreaUtils::lHuiller );
 
     double nConnCoords[12]; // 4 nodes, 3D coordinates
     MB_CHK_SET_ERR(mb->get_coords(connectivity, nConnectivity, nConnCoords), "Failed to get coordinates");
@@ -734,14 +737,14 @@ double Remapper_GenerateFEMetaData(
 
 
     // Apply bubble adjustment to area
-    if (!fNoBubble) {
+    if (apply_bubble_correction) {
 
-        const double vecFaceArea = dFaceNumericalArea;
-        // mesh.CalculateFaceAreas(false);
+        // const double vecFaceArea = dFaceNumericalArea;
         // call IntxUtils calculate face areas using quadrature
+        const double vecFaceArea = areaAdaptor.area_spherical_polygon( nConnCoords, 4, 1.0 );
 
         if (dFaceNumericalArea != vecFaceArea) {
-        // Use uniform bubble for linear elements
+            // Use uniform bubble for linear elements
             if (nP < 3) {
                 double dMassDifference = vecFaceArea - dFaceNumericalArea;
                 for (int j = 0; j < nP; j++) {
@@ -946,6 +949,8 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
     std::cout.precision(10);
 
+    const size_t nvars = m_config.scalar_var_names.size();
+
 #pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
         if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
@@ -973,19 +978,19 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         std::vector<double> dataGLLJacobian;
 
         // Generate finite element metadata using existing function
-        double dNumericalArea = Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian);
+        double dNumericalArea = Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian, m_config.apply_bubble_correction);
 
         // Thread-safe output for first element only (use atomic check)
-        static bool first_output_done = false;
-        if (!first_output_done && m_pcomm->rank() == 0) {
-            #pragma omp critical
-            {
-                if (!first_output_done) {
-                    std::cout << "GLL Jacobian size: " << dataGLLJacobian.size() << std::endl;
-                    first_output_done = true;
-                }
-            }
-        }
+        // static bool first_output_done = false;
+        // if (!first_output_done && m_pcomm->rank() == 0) {
+        //     #pragma omp critical
+        //     {
+        //         if (!first_output_done) {
+        //             std::cout << "GLL Jacobian size: " << dataGLLJacobian.size() << std::endl;
+        //             first_output_done = true;
+        //         }
+        //     }
+        // }
 
         // Initialize element-averaged values (thread-local)
         std::unordered_map<std::string, double> element_averages_d;
@@ -1047,7 +1052,9 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 }
 
                 // Pre-compute inverse distance weights (vectorizable)
-                thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights(nearest_points.size(), 1.0);
+                thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights;
+                inv_weights.resize(nearest_points.size());
+                std::fill(inv_weights.begin(), inv_weights.end(), 1.0);
 
                 // Vectorized distance and weight computation
                 // #pragma omp simd
@@ -1119,17 +1126,11 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                         auto var_it = point_data.d_scalar_variables.find(var_name);
                         if (var_it != point_data.d_scalar_variables.end()) {
                             m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
-                            if (elem_idx < 10) {
-                                std::cout << "Double Data (" << var_name << ") at nearest neighbor elements is " << m_mesh_data.d_scalar_fields[var_name][elem_idx] << std::endl;
-                            }
                         }
                         else {
                             auto ivar_it = point_data.i_scalar_variables.find(var_name);
                             if (ivar_it != point_data.i_scalar_variables.end()) {
                                 m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second *inv_total_weight);
-                            }
-                            if (elem_idx < 10) {
-                                std::cout << "Integer Data (" << var_name << ") at nearest neighbor elements is " << m_mesh_data.i_scalar_fields[var_name][elem_idx] << std::endl;
                             }
                         }
                     }
@@ -1151,6 +1152,23 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
     if (error_count > 0 && m_pcomm->rank() == 0) {
         std::cout << "Warning: " << error_count << " elements failed processing out of "
                   << m_mesh_data.elements.size() << " total elements" << std::endl;
+    }
+
+    // Thread-safe debugging output after parallel region
+    if (m_pcomm->rank() == 0) {
+        for (const auto& var_name : m_config.scalar_var_names) {
+            std::cout << "Sample values for " << var_name << ": ";
+            for (size_t i = 0; i < std::min(size_t(5), m_mesh_data.elements.size()); ++i) {
+                auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
+                auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
+                if (d_it != m_mesh_data.d_scalar_fields.end()) {
+                    std::cout << d_it->second[i] << " ";
+                } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
+                    std::cout << i_it->second[i] << " ";
+                }
+            }
+            std::cout << std::endl;
+        }
     }
 
     return MB_SUCCESS;

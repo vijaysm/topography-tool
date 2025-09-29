@@ -35,21 +35,13 @@ public:
     };
 
 private:
-    // Interface* m_interface;
+    Interface* m_interface;
     ParallelComm* m_pcomm;
     CrystalRouterConfig m_config;
     bool m_is_usgs_format;
 
     // Store variable names for consistent packing/unpacking
     std::vector<std::string> m_variable_names;
-
-    // Crystal router communication data
-    struct PointTuple {
-        int target_rank;     // Destination rank
-        double lon, lat;     // Geographic coordinates
-        double x, y, z;      // Cartesian coordinates
-        // Scalar variables will be packed separately
-    };
 
 public:
     ParallelPointCloudDistributor(Interface* interface, ParallelComm* pcomm, bool is_usgs_format);

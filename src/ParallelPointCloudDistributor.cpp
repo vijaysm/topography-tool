@@ -7,8 +7,7 @@
 namespace moab {
 
 ParallelPointCloudDistributor::ParallelPointCloudDistributor(Interface* interface, ParallelComm* pcomm, bool usgs_format)
-    : //m_interface(interface),
-    m_pcomm(pcomm), m_is_usgs_format(usgs_format) {
+    : m_interface(interface), m_pcomm(pcomm), m_is_usgs_format(usgs_format) {
     // Set default configuration
     m_config.allow_multiple_ownership = true;
     m_config.bbox_expansion_factor = 0.0;
