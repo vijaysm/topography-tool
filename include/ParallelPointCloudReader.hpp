@@ -233,8 +233,9 @@ private:
 };
 
 
+
 template<typename T>
-inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coordinates) {
+inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, T* coordinates) {
     // Convert lon/lat (in degrees) to Cartesian coordinates on unit sphere
     T lon_rad = lon_deg * M_PI / 180.0;
     T lat_rad = lat_deg * M_PI / 180.0;
@@ -244,6 +245,11 @@ inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coor
     coordinates[1] = cos_lat * sin(lon_rad);  // y
     coordinates[2] = sin(lat_rad);            // z
     return MB_SUCCESS;
+}
+
+template<typename T>
+inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coordinates) {
+    return RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
 }
 
 /// <summary>

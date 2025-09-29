@@ -6,9 +6,6 @@
 #include "moab/ParallelComm.hpp"
 #include "moab/ErrorHandler.hpp"
 #include "nanoflann.hpp"
-// #include "DataArray1D.h"
-#include "DataArray3D.h"
-#include "GaussLobattoQuadrature.hpp"
 #include <array>
 #include <vector>
 #include <map>
@@ -23,24 +20,25 @@ namespace moab {
  * @brief Point cloud adapter for nanoflann KD-tree
  */
 struct PointCloudAdapter {
-    std::vector<ParallelPointCloudReader::PointType3D> points;
+    // const std::vector<ParallelPointCloudReader::PointType>& latlon_points;
+    std::vector<ParallelPointCloudReader::CoordinateType> points;
 
-    PointCloudAdapter(const std::vector<ParallelPointCloudReader::PointType>& pts) {
-        points.resize(pts.size());
-#pragma omp parallel for shared(points)
+    PointCloudAdapter(const std::vector<ParallelPointCloudReader::PointType>& pts) //: latlon_points(pts)
+    {
+        points.resize(pts.size() * 3);
+#pragma omp parallel for shared(pts, points)
         for (size_t i = 0; i < pts.size(); ++i) {
-            RLLtoXYZ_Deg(pts[i][0], pts[i][1], points[i]);
-            // points[i][0] = pts[i][0];
-            // points[i][1] = pts[i][1];
+            size_t offset = i * 3;
+            RLLtoXYZ_Deg(pts[i][0], pts[i][1], points.data() + offset);
         }
     }
 
     // Must return the number of data points
-    inline size_t kdtree_get_point_count() const { return points.size(); }
+    inline size_t kdtree_get_point_count() const { return points.size() / 3; }
 
     // Returns the dim'th component of the idx'th point in the class
     inline ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
-        return points[idx][dim];
+        return points[idx * 3 + dim];
     }
 
     // Optional bounding-box computation: return false to default to a standard bbox computation loop
@@ -50,8 +48,8 @@ struct PointCloudAdapter {
 
 // Define the KD-tree type with explicit template parameters
 typedef nanoflann::KDTreeSingleIndexAdaptor<
-    // nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
-    nanoflann::SO3_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
+    nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
+    // nanoflann::SO2_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
     PointCloudAdapter,
     3, /* dim */
     size_t /* IndexType */
@@ -121,8 +119,8 @@ protected:
     ErrorCode validate_remapping_results();
     void print_remapping_statistics();
 
-    std::pair<size_t, ParallelPointCloudReader::CoordinateType>  find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
-                          const ParallelPointCloudReader::PointData& point_data, int max_neighbors = 1);
+    std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>>  find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
+                          const ParallelPointCloudReader::PointData& point_data, const size_t *max_neighbors = nullptr, const ParallelPointCloudReader::CoordinateType* search_radius = nullptr);
 
     // KD-tree members for fast nearest neighbor queries
     std::unique_ptr<PointCloudAdapter> m_adapter;

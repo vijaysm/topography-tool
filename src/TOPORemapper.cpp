@@ -151,7 +151,7 @@ int main(int argc, char* argv[]) {
                 remap_config.max_neighbors = 1;    // Nearest neighbor only
                 remap_config.spectral_order = 4;   // Spectral element order
                 remap_config.continuous_gll = true; // Use continuous GLL nodes
-                remap_config.apply_bubble_correction = false; // No bubble correction for now
+                remap_config.apply_bubble_correction = true; // No bubble correction for now
                 remap_config.use_element_centroids = true;
                 remap_config.is_usgs_format = reader.is_usgs_format();
 

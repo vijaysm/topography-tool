@@ -1,11 +1,16 @@
 #include "ScalarRemapper.hpp"
 #include "moab/CartVect.hpp"
+#include "GaussLobattoQuadrature.hpp"
 #include <iostream>
 #include <cmath>
 #include <algorithm>
 #include <limits>
 #include <chrono>
 #include <numeric>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace moab {
 
@@ -70,15 +75,12 @@ ErrorCode ScalarRemapper::remap_scalars(const ParallelPointCloudReader::PointDat
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     if (m_pcomm->rank() == 0) {
-        std::cout << "Remapping completed in " << duration.count() << " ms" << std::endl;
+        std::cout << "Remapping completed in " << duration.count() / 1000.0 << " seconds" << std::endl;
     }
 
     // Validate results and print statistics
     MB_CHK_ERR(validate_remapping_results());
     print_remapping_statistics();
-
-    // Copy results to output
-    // mesh_data = m_mesh_data;
 
     return MB_SUCCESS;
 }
@@ -124,17 +126,14 @@ ErrorCode ScalarRemapper::extract_mesh_centroids() {
 ErrorCode ScalarRemapper::compute_element_centroid(EntityHandle element, ParallelPointCloudReader::PointType3D& centroid) {
 
     // Get element centroid directly (this is just average of vertex coordinates)
-    double centroid_data[3];
-    MB_CHK_ERR(m_interface->get_coords(&element, 1, centroid_data));
+    CartVect centroid_data;
+    MB_CHK_ERR(m_interface->get_coords(&element, 1, centroid_data.array()));
 
-    ParallelPointCloudReader::CoordinateType dMag = 0.0;
-    for (size_t i = 0; i < 3; ++i) {
-        dMag += centroid_data[i]*centroid_data[i];
-    }
     // project to unit sphere
-    dMag = std::sqrt(dMag);
+    centroid_data.normalize();
+
     for (size_t i = 0; i < 3; ++i) {
-        centroid[i] = centroid_data[i]/dMag;
+        centroid[i] = centroid_data[i];
     }
 
     return MB_SUCCESS;
@@ -269,26 +268,39 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
     if (point_data.lonlat_coordinates.empty()) {
         return MB_FAILURE;
     }
+    int num_threads = 1;
+#ifdef _OPENMP
+#pragma omp parallel
+    {
+        num_threads = omp_get_max_threads();
+    }
+    // num_threads = omp_get_num_threads();
+#endif
 
     try {
         // Create adapter for point cloud data
         m_adapter = std::unique_ptr<PointCloudAdapter>(new PointCloudAdapter(point_data.lonlat_coordinates));
 
         // Create KD-tree with 10 max leaf size for good performance
+        if (m_pcomm->rank() == 0) {
+            std::cout << "Building KD-tree index now with " << num_threads << " threads..." << std::endl;
+        }
+
+        auto redist_start = std::chrono::high_resolution_clock::now();
         m_kdtree = std::unique_ptr<KDTree>(new KDTree(3, *m_adapter,
-                                                        nanoflann::KDTreeSingleIndexAdaptorParams(20,
+                                                        nanoflann::KDTreeSingleIndexAdaptorParams(16,
                                                             nanoflann::KDTreeSingleIndexAdaptorFlags::SkipInitialBuildIndex,
-                                                            12 /* number of threads */)
+                                                            num_threads /* number of threads */)
                                                     ) );
 
         // Build the index
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Building KD-tree index now..." << std::endl;
-        }
         m_kdtree->buildIndex();
         m_kdtree_built = true;
 
+        auto redist_end = std::chrono::high_resolution_clock::now();
+        auto redist_duration = std::chrono::duration_cast<std::chrono::milliseconds>(redist_end - redist_start);
         if (m_pcomm->rank() == 0) {
+            std::cout << "KD-tree build time: " << redist_duration.count()/1000.0 << " seconds" << std::endl;
             std::cout << "Built KD-tree index for " << point_data.lonlat_coordinates.size() << " points" << std::endl;
         }
 
@@ -315,12 +327,13 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
 
     std::cout.flush();
 
+    constexpr size_t max_neighbors = 1;
 #pragma omp parallel for shared(m_mesh_data, point_data, m_kdtree)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.centroids.size(); ++elem_idx) {
         const ParallelPointCloudReader::PointType3D& centroid = m_mesh_data.centroids[elem_idx];
 
-        auto nearest_point = find_nearest_point(centroid, point_data);
-        size_t nearest_point_idx = nearest_point.first;
+        auto nearest_point = find_nearest_point(centroid, point_data, &max_neighbors);
+        size_t nearest_point_idx = nearest_point.size() > 0 ? nearest_point[0].first : static_cast<size_t>(-1);
         // ParallelPointCloudReader::CoordinateType nearest_point_dist_sq = nearest_point.second * nearest_point.second;
 
         if (elem_idx < 10) {
@@ -357,9 +370,17 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
     return MB_SUCCESS;
 }
 
-std::pair<size_t, ParallelPointCloudReader::CoordinateType> ScalarRemapper::find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
+std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> ScalarRemapper::find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
                                                const ParallelPointCloudReader::PointData& point_data,
-                                             int max_neighbors) {
+                                             const size_t* user_max_neighbors,
+                                            const ParallelPointCloudReader::CoordinateType* user_search_radius) {
+    size_t max_neighbors = 1;
+    ParallelPointCloudReader::CoordinateType search_radius = m_config.search_radius;
+
+    if (user_max_neighbors) max_neighbors = *user_max_neighbors;
+    if (user_search_radius) search_radius = *user_search_radius;
+
+    std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> ret_matches;
     if (!m_kdtree_built || !m_kdtree) {
         // Fallback to linear search if KD-tree is not available
         size_t nearest_idx = static_cast<size_t>(-1);
@@ -372,7 +393,7 @@ std::pair<size_t, ParallelPointCloudReader::CoordinateType> ScalarRemapper::find
             ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, point_data.lonlat_coordinates[i]);
 
             // Check search radius constraint
-            if (m_config.search_radius > 0.0 && distance > m_config.search_radius) {
+            if (search_radius > 0.0 && distance > search_radius) {
                 continue;
             }
 
@@ -382,34 +403,38 @@ std::pair<size_t, ParallelPointCloudReader::CoordinateType> ScalarRemapper::find
             }
         }
 
-        return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(nearest_idx, min_distance);
+        ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(nearest_idx, min_distance));
+
+        return ret_matches;
     }
 
     // Use KD-tree for fast nearest neighbor search
     try {
         // const double query_pt[3] = {target_point[0], target_point[1], target_point[2]};
+        nanoflann::SearchParameters params;
+        params.sorted = true;
+        params.eps = std::numeric_limits<ParallelPointCloudReader::CoordinateType>::epsilon() * 10; // 10x machine epsilon
 
-        if (m_config.search_radius > 0.0) {
+        if (search_radius > 0.0) {
             // Radius search with distance constraint
-            std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> ret_matches;
-            nanoflann::SearchParameters params;
             const size_t num_matches = m_kdtree->radiusSearch(
-                target_point.data(), m_config.search_radius * m_config.search_radius, ret_matches, params);
+                target_point.data(), search_radius, ret_matches, params);
 
             if (num_matches == 0) {
-                return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0);
+                ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0));
             }
+            return ret_matches;
 
             // Find the closest match within radius
-            size_t best_idx = ret_matches[0].first;
-            auto best_dist = ret_matches[0].second;
-            for (size_t i = 1; i < num_matches; ++i) {
-                if (ret_matches[i].second < best_dist) {
-                    best_dist = ret_matches[i].second;
-                    best_idx = ret_matches[i].first;
-                }
-            }
-            return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(best_idx, best_dist);
+            // size_t best_idx = ret_matches[0].first;
+            // auto best_dist = ret_matches[0].second;
+            // for (size_t i = 1; i < num_matches; ++i) {
+            //     if (ret_matches[i].second < best_dist) {
+            //         best_dist = ret_matches[i].second;
+            //         best_idx = ret_matches[i].first;
+            //     }
+            // }
+            // return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(best_idx, best_dist);
         } else {
             // Simple nearest neighbor search
             std::vector<size_t> ret_index(max_neighbors);
@@ -417,13 +442,20 @@ std::pair<size_t, ParallelPointCloudReader::CoordinateType> ScalarRemapper::find
             nanoflann::KNNResultSet<ParallelPointCloudReader::CoordinateType> result_set(max_neighbors);
             result_set.init(ret_index.data(), out_dist_sqr.data());
 
-            m_kdtree->findNeighbors(result_set, target_point.data(), nanoflann::SearchParameters());
+            // m_kdtree->findNeighbors(result_set, target_point.data(), params);
+            m_kdtree->knnSearch(target_point.data(), max_neighbors, ret_index.data(), out_dist_sqr.data());
 
-            return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(ret_index[0], out_dist_sqr[0]); // Return the nearest point index
+            // return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(ret_index[0], out_dist_sqr[0]);
+            // Return the nearest point indices and distances
+            for (size_t i = 0; i < max_neighbors; ++i) {
+                ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(ret_index[i], out_dist_sqr[i]));
+            }
+            return ret_matches;
         }
     } catch (const std::exception& e) {
         std::cerr << "Error in KD-tree search: " << e.what() << std::endl;
-        return std::pair<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0);
+        ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0));
+        return ret_matches;
     }
 }
 
@@ -630,7 +662,6 @@ double Remapper_GenerateFEMetaData(
 
     const int nP = dG.size();
 
-
 	// Initialize data structures
 	dataGLLJacobian.resize(nP * nP);
 
@@ -835,20 +866,6 @@ std::vector< size_t > radius_search_kdtree( const MOABKDTree& tree,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// 3D Point Cloud adapter for KD-tree
-struct PointCloud3D {
-    const std::vector<ParallelPointCloudReader::PointType3D>& points;
-    PointCloud3D(const std::vector<ParallelPointCloudReader::PointType3D>& pts) : points(pts) {}
-
-    size_t kdtree_get_point_count() const { return points.size(); }
-
-    ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
-        return points[idx][dim];
-    }
-
-    template <class BBOX> bool kdtree_get_bbox(BBOX&) const { return false; }
-};
-
 // PCSpectralProjectionRemapper Implementation
 PCSpectralProjectionRemapper::PCSpectralProjectionRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
     : ScalarRemapper(interface, pcomm, mesh_set) {
@@ -916,39 +933,8 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
     const int nP = m_config.spectral_order;
 
-    // Build KD-tree from point cloud data for fast spatial searches
-    // if (m_pcomm->rank() == 0) {
-    //     std::cout << "Building KD-tree for " << point_data.lonlat_coordinates.size() << " points" << std::endl;
-    // }
-
-    // Pre-compute all 3D points for KD-tree (parallelized coordinate conversion)
-//     std::vector<ParallelPointCloudReader::PointType3D> cartesian_points;
-//     cartesian_points.resize(point_data.lonlat_coordinates.size());
-
-//     // Parallel coordinate transformation
-// #pragma omp parallel for schedule(static)
-//     for (size_t i = 0; i < point_data.lonlat_coordinates.size(); ++i) {
-//         RLLtoXYZ_Deg(point_data.lonlat_coordinates[i][0], point_data.lonlat_coordinates[i][1], cartesian_points[i]);
-//     }
-
-    // Create 3D point cloud adapter for KD-tree
-    // PointCloud3D point_cloud_3d(cartesian_points);
-
-    // Build KD-tree
-    // using KDTree3D = nanoflann::KDTreeSingleIndexAdaptor<
-    //     nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloud3D, ParallelPointCloudReader::CoordinateType>,
-    //     PointCloud3D, 3, size_t>;
-
-    // KDTree3D kdtree(3, point_cloud_3d, nanoflann::KDTreeSingleIndexAdaptorParams(10));
-    // kdtree.buildIndex();
-
-    // if (m_pcomm->rank() == 0) {
-    //     std::cout << "Built KD-tree with " << point_cloud_3d.kdtree_get_point_count() << " points" << std::endl;
-    // }
-
     if (m_pcomm->rank() == 0) {
-        // size_t valid_count = std::count(element_valid.begin(), element_valid.end(), true);
-        std::cout << "Processing " << m_mesh_data.elements.size() << " valid quadrilateral elements in parallel" << std::endl;
+        std::cout << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" << std::endl;
     }
 
     // Get GLL quadrature points and weights
@@ -958,24 +944,30 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
     // Parallel processing of mesh elements
     std::vector<ErrorCode> element_errors(m_mesh_data.elements.size(), MB_SUCCESS);
 
-#pragma omp parallel for schedule(dynamic, 1) shared(element_errors, m_kdtree, point_data)
-    for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
-        // if (!element_valid[elem_idx]) {
-        //     element_errors[elem_idx] = MB_FAILURE;
-        //     continue;
-        // }
+    std::cout.precision(10);
 
+#pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data)
+    for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
         if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
             std::cout << "Processing element " << elem_idx << " of " << m_mesh_data.elements.size() << std::endl;
         }
 
+        ErrorCode rval;
         EntityHandle face = m_mesh_data.elements[elem_idx];
         const EntityHandle* connectivity;
         int nConnectivity;
-        m_interface->get_connectivity(face, connectivity, nConnectivity, true);
+        rval = m_interface->get_connectivity(face, connectivity, nConnectivity, true);
+        if (MB_SUCCESS != rval) {
+            element_errors[elem_idx] = MB_FAILURE;
+            continue;
+        }
 
         double nConnCoords[12]; // 4 nodes, 3D coordinates
-        m_interface->get_coords(connectivity, nConnectivity, nConnCoords);
+        rval = m_interface->get_coords(connectivity, nConnectivity, nConnCoords);
+        if (MB_SUCCESS != rval) {
+            element_errors[elem_idx] = MB_FAILURE;
+            continue;
+        }
 
         // Generate GLL metadata for this face (thread-safe)
         std::vector<double> dataGLLJacobian;
@@ -1007,25 +999,22 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         for (int j = 0; j < nP; j++) {
             for (int i = 0; i < nP; i++) {
                 int gll_idx = j * nP + i;
-                // if (!gll_valid[gll_idx]) continue;
                 CartVect nodeGLL;
-                ErrorCode rval = Remapper_ApplyLocalMap(m_interface, nConnCoords,
+                rval = Remapper_ApplyLocalMap(m_interface, nConnCoords,
                                                         dG[i], dG[j], nodeGLL);
                 if (MB_SUCCESS != rval) {
                     gll_valid[gll_idx] = false;
                     continue;
                 }
 
-                // const CartVect& nodeGLL = gll_nodes[gll_idx];
-
-                // Convert to PointType3D for comparison
+                // GLL point query format (aligned for SIMD)
                 ParallelPointCloudReader::PointType3D gll_point = {
                     static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[0]),
                     static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[1]),
                     static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[2])
                 };
 
-                // Optimized KD-tree search with thread-local storage
+                // Optimized KD-tree search with thread-local storage:
                 thread_local std::vector<size_t> neighbor_indices;
                 thread_local std::vector<ParallelPointCloudReader::CoordinateType> distances_sq;
                 thread_local std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> matches;
@@ -1035,99 +1024,37 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 matches.clear();
 
                 // Compute weighted average from neighboring points (vectorized)
-                const double gll_weight = dataGLLJacobian[gll_idx]; // Element 0 since we process one face at a time
-                const ParallelPointCloudReader::CoordinateType search_radius = gll_weight * gll_weight; // Element 0 since we process one face at a time
-                const size_t max_neighbors = 10000;
+                const double gll_weight = (dataGLLJacobian[gll_idx]); // the Jacobian of the GLL point
+                const ParallelPointCloudReader::CoordinateType search_radius = gll_weight;
+                const size_t max_neighbors = 5000; // if it exceeds, perhaps SE mesh resolution is too coarse?
 
-                // Convert GLL point to query format (aligned for SIMD)
-                // alignas(16) ParallelPointCloudReader::CoordinateType query_pt[3] = {gll_point[0], gll_point[1], gll_point[2]};
+                auto nearest_points = find_nearest_point(gll_point, point_data, nullptr, &search_radius);
 
+                // size_t found_count = m_kdtree->radiusSearch(gll_point.data(), search_radius, matches, params);
+                size_t found_count = nearest_points.size();
 
-                // const ParallelPointCloudReader::PointType3D& centroid = m_mesh_data.centroids[elem_idx];
-
-                // auto nearest_point = find_nearest_point(centroid, point_data);
-                // size_t nearest_point_idx = nearest_point.first;
-                // ParallelPointCloudReader::CoordinateType min_distance = nearest_point.second;
-
-                // if (nearest_point_idx != static_cast<size_t>(-1)) {
-                //     // Copy scalar values from nearest point to mesh element
-                //     for (const auto& var_name : m_config.scalar_var_names) {
-                //         auto var_it = point_data.d_scalar_variables.find(var_name);
-                //         if (var_it != point_data.d_scalar_variables.end() &&
-                //             nearest_point_idx < var_it->second.size()) {
-                //             m_mesh_data.d_scalar_fields[var_name][elem_idx] = var_it->second[nearest_point_idx];
-                //             if (elem_idx < 10) {
-                //                 std::cout << "Double Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << var_it->second[nearest_point_idx] << std::endl;
-                //             }
-                //         }
-                //         else {
-                //             auto ivar_it = point_data.i_scalar_variables.find(var_name);
-                //             if (ivar_it != point_data.i_scalar_variables.end() &&
-                //                 nearest_point_idx < ivar_it->second.size()) {
-                //                 m_mesh_data.i_scalar_fields[var_name][elem_idx] = ivar_it->second[nearest_point_idx];
-                //             }
-                //             if (elem_idx < 10) {
-                //                 std::cout << "Integer Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << ivar_it->second[nearest_point_idx] << std::endl;
-                //             }
-                //         }
-                //     }
-                // }
-                // else {
-                //     std::cout << m_pcomm->rank() << ": No nearest point found for element " << elem_idx << std::endl;
-                // }
-
-
-                // Simple nearest neighbor search
-                std::vector<size_t> ret_index(max_neighbors);
-                std::vector<ParallelPointCloudReader::CoordinateType> out_dist_sqr(max_neighbors);
-                nanoflann::KNNResultSet<ParallelPointCloudReader::CoordinateType> result_set(max_neighbors);
-                result_set.init(ret_index.data(), out_dist_sqr.data());
-
-                m_kdtree->findNeighbors(result_set, gll_point.data(), nanoflann::SearchParameters());
-
-                // Radius search using KD-tree (thread-safe read-only access)
-                nanoflann::SearchParameters params;
-                params.sorted = true;
-
-                size_t found_count = m_kdtree->radiusSearch(gll_point.data(), search_radius, matches, params);
-                // size_t found_count = 0;
+                // if (elem_idx < 100) std::cout << "Found max neighbors " << found_count << " for element " << elem_idx << " with search radius = " << search_radius << std::endl;
 
                 if (found_count > 0) {
                     // Use radius search results (vectorized copy)
                     size_t use_count = std::min(found_count, max_neighbors);
-                    neighbor_indices.reserve(use_count);
-                    distances_sq.reserve(use_count);
-
-                    // Vectorized extraction of indices and distances
-                    for (size_t k = 0; k < use_count; ++k) {
-                        neighbor_indices.push_back(matches[k].first);
-                        distances_sq.push_back(matches[k].second);
-                    }
+                    // if (use_count == max_neighbors) std::cout << m_pcomm->rank() << ": Exceeded max neighbors " << max_neighbors << ", with true count = " << found_count << " for element " << elem_idx << " with search radius = " << search_radius << std::endl;
                 } else {
                     // Fallback to nearest neighbor
-                    // size_t nearest_idx;
-                    // ParallelPointCloudReader::CoordinateType nearest_dist_sq;
-                    // m_kdtree->knnSearch(gll_point.data(), 1, &nearest_idx, &nearest_dist_sq);
-                    // size_t nearest_idx = find_nearest_point(gll_point, point_data);
-
-                    auto nearest_point = find_nearest_point(gll_point, point_data);
-                    size_t nearest_idx = nearest_point.first;
-                    ParallelPointCloudReader::CoordinateType nearest_dist_sq = nearest_point.second * nearest_point.second;
-
-                    neighbor_indices.push_back(nearest_idx);
-                    distances_sq.push_back(nearest_dist_sq);
+                    const size_t single_neighbor = 1;
+                    nearest_points = find_nearest_point(gll_point, point_data, &single_neighbor);
+                    // std::cout << m_pcomm->rank() << ": Did not find any in search radius " << search_radius << ". Using single neighbor for element " << elem_idx << std::endl;
                 }
 
                 // Pre-compute inverse distance weights (vectorizable)
-                thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights;
-                inv_weights.resize(neighbor_indices.size());
+                thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights(nearest_points.size(), 1.0);
 
                 // Vectorized distance and weight computation
-                #pragma omp simd
-                for (size_t k = 0; k < neighbor_indices.size(); ++k) {
-                    ParallelPointCloudReader::CoordinateType distance = std::sqrt(distances_sq[k]);
-                    inv_weights[k] = 1.0 / (distance + 1e-10);
-                }
+                // #pragma omp simd
+                // for (size_t k = 0; k < nearest_points.size(); ++k) {
+                //     ParallelPointCloudReader::CoordinateType distance = std::sqrt(nearest_points[k].second);
+                //     inv_weights[k] = 1.0 / (distance + 1e-10);
+                // }
 
                 // Process each scalar variable
                 for (const auto& var_name : m_config.scalar_var_names) {
@@ -1136,17 +1063,16 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
                     // Check if it's a double variable
                     auto var_it = point_data.d_scalar_variables.find(var_name);
-                    if (var_it != point_data.d_scalar_variables.end()) {
+                    if (!m_config.is_usgs_format && var_it != point_data.d_scalar_variables.end()) {
                         const auto& values = var_it->second;
 
                         // Vectorized weighted sum computation
                         #pragma omp simd reduction(+:weighted_sum,weight_sum)
-                        for (size_t k = 0; k < neighbor_indices.size(); ++k) {
-                            size_t pt_idx = neighbor_indices[k];
+                        for (size_t k = 0; k < nearest_points.size(); ++k) {
+                            size_t pt_idx = nearest_points[k].first;
                             if (pt_idx < values.size()) {
-                                ParallelPointCloudReader::CoordinateType weight = inv_weights[k];
-                                weighted_sum += weight * values[pt_idx];
-                                weight_sum += weight;
+                                weighted_sum += inv_weights[k] * values[pt_idx];
+                                weight_sum += inv_weights[k];
                             }
                         }
                     } else {
@@ -1157,19 +1083,18 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
                             // Vectorized weighted sum computation for integers
                             #pragma omp simd reduction(+:weighted_sum,weight_sum)
-                            for (size_t k = 0; k < neighbor_indices.size(); ++k) {
-                                size_t pt_idx = neighbor_indices[k];
+                            for (size_t k = 0; k < nearest_points.size(); ++k) {
+                                size_t pt_idx = nearest_points[k].first;
                                 if (pt_idx < values.size()) {
-                                    ParallelPointCloudReader::CoordinateType weight = inv_weights[k];
-                                    weighted_sum += weight * static_cast<double>(values[pt_idx]);
-                                    weight_sum += weight;
+                                    weighted_sum += inv_weights[k] * static_cast<double>(values[pt_idx]);
+                                    weight_sum += inv_weights[k];
                                 }
                             }
                         }
                     }
 
                     // Add GLL-weighted contribution to element average
-                    if (weight_sum > 0.0) {
+                    if (fabs(weight_sum) > 0.0) {
                         double gll_value = weighted_sum / weight_sum;
                         element_averages_d[var_name] += gll_weight * gll_value;
                     }
@@ -1180,7 +1105,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         }
 
         // Normalize element averages and store in mesh data (thread-safe writes)
-        if (total_weight > 0.0) {
+        if (fabs(total_weight) > 0.0) {
             const double inv_total_weight = 1.0 / total_weight; // Avoid division in loop
             for (const auto& var_name : m_config.scalar_var_names) {
                 auto it = element_averages_d.find(var_name);
@@ -1249,7 +1174,7 @@ moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >& dataGL
 
 	// Number of Faces
     std::vector<EntityHandle> faces;
-    // mb->get_entities_by_dimension(m_mesh_set, 2, faces);
+    m_interface->get_entities_by_dimension(m_mesh_set, 2, faces);
 
 
     // Initialize coordinates for map
