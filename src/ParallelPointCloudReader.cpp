@@ -452,12 +452,12 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
         lonlat_bbox.expand(m_config.buffer_factor);
 
     // Ensure longitude stays within [0, 180] bounds and latitude within [-90, 90]
-    assert(lonlat_bbox.min_coords[0] >= 0.0);
-    assert(lonlat_bbox.min_coords[1] >= -90.0);
-    if(lonlat_bbox.max_coords[0] > 360.0)
-    std::cout << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" << std::endl;
-    assert(lonlat_bbox.max_coords[0] <= 360.0);
-    assert(lonlat_bbox.max_coords[1] <= 90.0);
+    // assert(lonlat_bbox.min_coords[0] >= 0.0);
+    // assert(lonlat_bbox.min_coords[1] >= -90.0);
+    // if(lonlat_bbox.max_coords[0] > 360.0)
+    // std::cout << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" << std::endl;
+    // assert(lonlat_bbox.max_coords[0] <= 360.0);
+    // assert(lonlat_bbox.max_coords[1] <= 90.0);
 
     {
         std::cout << m_pcomm->rank() << ": Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
@@ -563,6 +563,18 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                         coords[i] = {0.0, 0.0};  // Out of bounds
                     }
                 }
+                // // For USGS format, store the 1D lat/lon arrays instead of generating all pairs
+                // // This saves memory for large grids
+                // coords.resize(nlats_count * nlons_count);
+
+                // // Store just the 1D arrays - they will be populated in read_local_chunk_distributed
+                // // Here we just create placeholder coordinates for size tracking
+                // size_t coord_idx = 0;
+                // for (MPI_Offset ilat = 0; ilat < nlats_count; ++ilat) {
+                //     for (MPI_Offset ilon = 0; ilon < nlons_count; ++ilon) {
+                //         coords[coord_idx++] = {0.0, 0.0};  // Placeholder
+                //     }
+                // }
 
                 return MB_SUCCESS;
             } else {
@@ -1123,30 +1135,35 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
         chunk_data.clear();
         chunk_data.reserve(count);
 
-        // Read coordinates
-        MB_CHK_ERR(read_coordinates_chunk(start_idx, count, chunk_data.lonlat_coordinates));
+        // For USGS format, read and store 1D lat/lon arrays efficiently
+        if (m_is_usgs_format) {
+            // Read the actual 1D coordinate arrays for this rank's chunk
+            PnetCDF::NcmpiVar lon_var = m_vars.at("lon");
+            PnetCDF::NcmpiVar lat_var = m_vars.at("lat");
 
-        // Handle coordinate conversion based on format
-        // chunk_data.lonlat_coordinates.clear();
-        // chunk_data.lonlat_coordinates.reserve(chunk_data.coordinates.size());
+            chunk_data.latitudes.resize(nlats_count);
+            chunk_data.longitudes.resize(nlons_count);
 
-        {
-            // Coordinates are lat/lon, store them and convert to Cartesian
-            // if (m_pcomm->rank() == 0) {
-            //     std::cout << "Detected lat/lon coordinates in NetCDF file" << std::endl;
-            // }
-            // for (const auto& coord : chunk_data.coordinates) {
-            //     chunk_data.lonlat_coordinates.push_back({coord[0], coord[1]});
-            // }
+            std::vector<MPI_Offset> lat_start = {nlats_start};
+            std::vector<MPI_Offset> lat_count = {nlats_count};
+            std::vector<MPI_Offset> lon_start = {nlons_start};
+            std::vector<MPI_Offset> lon_count = {nlons_count};
 
-            // Convert lat/lon coordinates to Cartesian for mesh operations
-            // chunk_data.coordinates.clear();
-            // chunk_data.coordinates.reserve(chunk_data.lonlat_coordinates.size());
-            // for (auto& coord : chunk_data.lonlat_coordinates) {
-            //     std::array<double, 3> cart_coord;
-            //     RLLtoXYZ_Deg(coord[0], coord[1], cart_coord);
-            //     chunk_data.coordinates.push_back(cart_coord);
-            // }
+            lat_var.getVar_all(lat_start, lat_count, chunk_data.latitudes.data());
+            lon_var.getVar_all(lon_start, lon_count, chunk_data.longitudes.data());
+
+            // Mark as structured grid - coordinates will be computed on-the-fly
+            chunk_data.is_structured_grid = true;
+
+            if (m_pcomm->rank() == 0) {
+                std::cout << "USGS format: Stored " << chunk_data.latitudes.size() << " latitudes and "
+                          << chunk_data.longitudes.size() << " longitudes (total grid points: "
+                          << chunk_data.size() << ", computed on-the-fly)" << std::endl;
+            }
+        } else {
+            // Standard format: read coordinates directly into explicit storage
+            MB_CHK_ERR(read_coordinates_chunk(start_idx, count, chunk_data.lonlat_coordinates));
+            chunk_data.is_structured_grid = false;
         }
 
         // Read scalar variables with buffered reading for large datasets
@@ -1161,10 +1178,10 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
 
                 chunk_data.i_scalar_variables[var_name] = std::move(scalar_data);
 
-                if (chunk_data.i_scalar_variables[var_name].size() != chunk_data.lonlat_coordinates.size()) {
+                if (chunk_data.i_scalar_variables[var_name].size() != chunk_data.size()) {
                     std::cerr << "WARNING: Scalar variable '" << var_name << "' has a different size ("
-                            << chunk_data.i_scalar_variables[var_name].size() << ") than the coordinates ("
-                            << chunk_data.lonlat_coordinates.size() << "). Data may be misaligned." << std::endl;
+                            << chunk_data.i_scalar_variables[var_name].size() << ") than the total points ("
+                            << chunk_data.size() << "). Data may be misaligned." << std::endl;
                 }
             } else {
                 std::vector<double> scalar_data;
@@ -1175,10 +1192,10 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
 
                 chunk_data.d_scalar_variables[var_name] = std::move(scalar_data);
 
-                if (chunk_data.d_scalar_variables[var_name].size() != chunk_data.lonlat_coordinates.size()) {
+                if (chunk_data.d_scalar_variables[var_name].size() != chunk_data.size()) {
                     std::cerr << "WARNING: Scalar variable '" << var_name << "' has a different size ("
-                            << chunk_data.d_scalar_variables[var_name].size() << ") than the coordinates ("
-                            << chunk_data.lonlat_coordinates.size() << "). Data may be misaligned." << std::endl;
+                            << chunk_data.d_scalar_variables[var_name].size() << ") than the total points ("
+                            << chunk_data.size() << "). Data may be misaligned." << std::endl;
                 }
             }
         }

@@ -273,7 +273,7 @@ NearestNeighborRemapper::~NearestNeighborRemapper() {
 }
 
 ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.lonlat_coordinates.empty()) {
+    if (point_data.size() == 0) {
         return MB_FAILURE;
     }
 
@@ -282,32 +282,54 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
             std::cout << "Building RegularGridLocator for USGS format data..." << std::endl;
         }
 
-        // For USGS format, we need to extract unique lat/lon values from the point cloud
-        // Since the data is organized as a regular grid, we can extract unique coordinates
-        std::vector<double> lats, lons;
-        std::set<double> unique_lats, unique_lons;
+        // For USGS format, use the 1D lat/lon arrays directly
+        if (!point_data.latitudes.empty() && !point_data.longitudes.empty()) {
+            if (m_pcomm->rank() == 0) {
+                std::cout << "Using stored 1D arrays: " << point_data.latitudes.size() 
+                          << " latitudes x " << point_data.longitudes.size() << " longitudes" << std::endl;
+            }
 
-        for (const auto& pt : point_data.lonlat_coordinates) {
-            unique_lons.insert(pt[0]);
-            unique_lats.insert(pt[1]);
-        }
+            // Convert to std::vector<double> if needed
+            std::vector<double> lats(point_data.latitudes.begin(), point_data.latitudes.end());
+            std::vector<double> lons(point_data.longitudes.begin(), point_data.longitudes.end());
 
-        lons.assign(unique_lons.begin(), unique_lons.end());
-        lats.assign(unique_lats.begin(), unique_lats.end());
+            auto build_start = std::chrono::high_resolution_clock::now();
+            m_grid_locator = std::unique_ptr<RegularGridLocator>(
+                new RegularGridLocator(lats, lons, m_config.distance_metric));
+            m_grid_locator_built = true;
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Detected grid dimensions: " << lats.size() << " x " << lons.size() << std::endl;
-        }
+            auto build_end = std::chrono::high_resolution_clock::now();
+            auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
+            if (m_pcomm->rank() == 0) {
+                std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+            }
+        } else {
+            // Fallback: extract unique lat/lon values from point cloud (for non-USGS or legacy code)
+            std::vector<double> lats, lons;
+            std::set<double> unique_lats, unique_lons;
 
-        auto build_start = std::chrono::high_resolution_clock::now();
-        m_grid_locator = std::unique_ptr<RegularGridLocator>(
-            new RegularGridLocator(lats, lons, m_config.distance_metric));
-        m_grid_locator_built = true;
+            for (const auto& pt : point_data.lonlat_coordinates) {
+                unique_lons.insert(pt[0]);
+                unique_lats.insert(pt[1]);
+            }
 
-        auto build_end = std::chrono::high_resolution_clock::now();
-        auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
-        if (m_pcomm->rank() == 0) {
-            std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+            lons.assign(unique_lons.begin(), unique_lons.end());
+            lats.assign(unique_lats.begin(), unique_lats.end());
+
+            if (m_pcomm->rank() == 0) {
+                std::cout << "Extracted grid dimensions: " << lats.size() << " x " << lons.size() << std::endl;
+            }
+
+            auto build_start = std::chrono::high_resolution_clock::now();
+            m_grid_locator = std::unique_ptr<RegularGridLocator>(
+                new RegularGridLocator(lats, lons, m_config.distance_metric));
+            m_grid_locator_built = true;
+
+            auto build_end = std::chrono::high_resolution_clock::now();
+            auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
+            if (m_pcomm->rank() == 0) {
+                std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+            }
         }
 
         return MB_SUCCESS;
@@ -319,7 +341,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
 }
 
 ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.lonlat_coordinates.empty()) {
+    if (point_data.size() == 0) {
         return MB_FAILURE;
     }
     int num_threads = 1;
@@ -332,8 +354,21 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
 #endif
 
     try {
+        // For structured grids, we need to materialize coordinates for KD-tree
+        std::vector<ParallelPointCloudReader::PointType> coords_for_kdtree;
+        if (point_data.is_structured_grid) {
+            if (m_pcomm->rank() == 0) {
+                std::cout << "Materializing " << point_data.size() << " coordinates for KD-tree from structured grid..." << std::endl;
+            }
+            coords_for_kdtree.resize(point_data.size());
+            for (size_t i = 0; i < point_data.size(); ++i) {
+                coords_for_kdtree[i] = point_data.get_lonlat(i);
+            }
+        }
+        
         // Create adapter for point cloud data
-        m_adapter = std::unique_ptr<PointCloudAdapter>(new PointCloudAdapter(point_data.lonlat_coordinates));
+        const auto& coords = point_data.is_structured_grid ? coords_for_kdtree : point_data.lonlat_coordinates;
+        m_adapter = std::unique_ptr<PointCloudAdapter>(new PointCloudAdapter(coords));
 
         // Create KD-tree with 10 max leaf size for good performance
         if (m_pcomm->rank() == 0) {
@@ -355,7 +390,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
         auto redist_duration = std::chrono::duration_cast<std::chrono::milliseconds>(redist_end - redist_start);
         if (m_pcomm->rank() == 0) {
             std::cout << "KD-tree build time: " << redist_duration.count()/1000.0 << " seconds" << std::endl;
-            std::cout << "Built KD-tree index for " << point_data.lonlat_coordinates.size() << " points" << std::endl;
+            std::cout << "Built KD-tree index for " << point_data.size() << " points" << std::endl;
         }
 
         return MB_SUCCESS;
@@ -367,7 +402,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
 }
 
 ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.lonlat_coordinates.empty()) {
+    if (point_data.size() == 0) {
         if (m_pcomm->rank() == 0) {
             std::cout << "No point cloud data available for remapping" << std::endl;
         }
@@ -474,11 +509,10 @@ std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateTy
         size_t nearest_idx = static_cast<size_t>(-1);
         ParallelPointCloudReader::CoordinateType min_distance = std::numeric_limits<ParallelPointCloudReader::CoordinateType>::max();
 
-        // ParallelPointCloudReader::CoordinateType lon, lat;
-        // const auto coordpoint = target_point.data();
-        // XYZtoRLL_Deg(coordpoint, lon, lat);
-        for (size_t i = 0; i < point_data.lonlat_coordinates.size(); ++i) {
-            ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, point_data.lonlat_coordinates[i]);
+        // Linear search through all points
+        for (size_t i = 0; i < point_data.size(); ++i) {
+            auto coord = point_data.get_lonlat(i);
+            ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, coord);
 
             // Check search radius constraint
             if (search_radius > 0.0 && distance > search_radius) {
@@ -553,7 +587,7 @@ InverseDistanceRemapper::InverseDistanceRemapper(Interface* interface, ParallelC
 }
 
 ErrorCode InverseDistanceRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.lonlat_coordinates.empty()) {
+    if (point_data.size() == 0) {
         if (m_pcomm->rank() == 0) {
             std::cout << "No point cloud data available for remapping" << std::endl;
         }
@@ -598,11 +632,10 @@ InverseDistanceRemapper::find_weighted_neighbors(const ParallelPointCloudReader:
     std::vector<WeightedPoint> weighted_points;
     constexpr double search_radius = 0.0;
 
-    // const auto coordpoint = target_point.data();
-    // ParallelPointCloudReader::CoordinateType lon, lat;
-    // XYZtoRLL_Deg(coordpoint, lon, lat);
-    for (size_t i = 0; i < point_data.lonlat_coordinates.size(); ++i) {
-        ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, point_data.lonlat_coordinates[i]);
+    // Linear search through all points
+    for (size_t i = 0; i < point_data.size(); ++i) {
+        auto coord = point_data.get_lonlat(i);
+        ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, coord);
 
         // Check search radius constraint
         if (search_radius > 0.0 && distance > search_radius) {
@@ -661,7 +694,7 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
 
 
 static moab::ErrorCode Remapper_ApplyLocalMap(
-    Interface* mb,
+    Interface* /* mb */,
     const double nodes[12],
 	double dAlpha,
 	double dBeta,
@@ -963,7 +996,7 @@ PCSpectralProjectionRemapper::PCSpectralProjectionRemapper(Interface* interface,
 }
 
 ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.lonlat_coordinates.empty()) {
+    if (point_data.size() == 0) {
         if (m_pcomm->rank() == 0) {
             std::cout << "No point cloud data available for remapping" << std::endl;
         }
@@ -1043,7 +1076,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
     std::cout.precision(10);
 
-    const size_t nvars = m_config.scalar_var_names.size();
+    // const size_t nvars = m_config.scalar_var_names.size();
 
 #pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
@@ -1072,7 +1105,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         std::vector<double> dataGLLJacobian;
 
         // Generate finite element metadata using existing function
-        double dNumericalArea = Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian, m_config.apply_bubble_correction);
+        /* double dNumericalArea = */ Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian, m_config.apply_bubble_correction);
 
         // Thread-safe output for first element only (use atomic check)
         // static bool first_output_done = false;
@@ -1124,7 +1157,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
                 // Compute weighted average from neighboring points (vectorized)
                 const ParallelPointCloudReader::CoordinateType search_radius = dataGLLJacobian[gll_idx];
-                const size_t max_neighbors = 5000; // if it exceeds, perhaps SE mesh resolution is too coarse?
+                // const size_t max_neighbors = 5000; // if it exceeds, perhaps SE mesh resolution is too coarse?
 
                 auto nearest_points = find_nearest_point(gll_point, point_data, nullptr, &search_radius);
 

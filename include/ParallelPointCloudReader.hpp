@@ -74,31 +74,92 @@ public:
     };
 
     struct PointData {
-        // std::vector<PointType3D> coordinates;  // 3D Cartesian for final output
-        std::vector<PointType> lonlat_coordinates;  // lat/lon for spatial operations
+        // For unstructured/irregular meshes: explicit coordinate storage
+        std::vector<PointType> lonlat_coordinates;
+        
+        // For structured grids (USGS format): 1D lat/lon arrays
+        std::vector<CoordinateType> longitudes;  // 1D longitude array
+        std::vector<CoordinateType> latitudes;   // 1D latitude array
+        bool is_structured_grid = false;         // Flag to indicate grid type
+        
+        // Scalar data
         std::unordered_map<std::string, std::vector<double>> d_scalar_variables;
         std::unordered_map<std::string, std::vector<int>> i_scalar_variables;
 
-        size_t size() const { return lonlat_coordinates.size(); }
+        /**
+         * @brief Get total number of points
+         * For structured grids: nlat * nlon
+         * For unstructured: lonlat_coordinates.size()
+         */
+        size_t size() const { 
+            if (is_structured_grid && !latitudes.empty() && !longitudes.empty()) {
+                return latitudes.size() * longitudes.size();
+            }
+            return lonlat_coordinates.size(); 
+        }
+
+        /**
+         * @brief Get longitude at global index
+         * For structured grids: computes from 1D arrays (lon moves fastest)
+         * For unstructured: reads from explicit storage
+         */
+        CoordinateType longitude(size_t global_idx) const { 
+            if (is_structured_grid && !longitudes.empty()) {
+                size_t nlon = longitudes.size();
+                size_t ilon = global_idx % nlon;
+                return longitudes[ilon];
+            }
+            return lonlat_coordinates[global_idx][0]; 
+        }
+        
+        /**
+         * @brief Get latitude at global index
+         * For structured grids: computes from 1D arrays (lon moves fastest)
+         * For unstructured: reads from explicit storage
+         */
+        CoordinateType latitude(size_t global_idx) const { 
+            if (is_structured_grid && !latitudes.empty()) {
+                size_t nlon = longitudes.size();
+                size_t ilat = global_idx / nlon;
+                return latitudes[ilat];
+            }
+            return lonlat_coordinates[global_idx][1]; 
+        }
+        
+        /**
+         * @brief Get lon/lat coordinate pair at global index
+         * Convenience method that returns both coordinates
+         */
+        PointType get_lonlat(size_t global_idx) const {
+            return {longitude(global_idx), latitude(global_idx)};
+        }
+        
+        /**
+         * @brief Get grid dimensions (only for structured grids)
+         */
+        void get_grid_dimensions(size_t& nlat, size_t& nlon) const {
+            if (is_structured_grid) {
+                nlat = latitudes.size();
+                nlon = longitudes.size();
+            } else {
+                nlat = 0;
+                nlon = 0;
+            }
+        }
 
         void reserve(size_t n) {
-            lonlat_coordinates.reserve(n);
-            // coordinates.reserve(n);
-            // for (auto it = scalar_variables.begin();
-            //      it != scalar_variables.end(); ++it) {
-            //     it->second.reserve(n);
-            // }
+            if (!is_structured_grid) {
+                lonlat_coordinates.reserve(n);
+            }
         }
 
         void clear() {
             lonlat_coordinates.clear();
+            longitudes.clear();
+            latitudes.clear();
             d_scalar_variables.clear();
             i_scalar_variables.clear();
-            // coordinates.clear();
-            // for (auto it = scalar_variables.begin();
-            //      it != scalar_variables.end(); ++it) {
-            //     it->second.clear();
-            // }
+            is_structured_grid = false;
         }
     };
 
