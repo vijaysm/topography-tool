@@ -6,6 +6,7 @@
 #include "moab/ParallelComm.hpp"
 #include "moab/ErrorHandler.hpp"
 #include "nanoflann.hpp"
+#include "RegularGridLocator.hpp"
 #include <array>
 #include <vector>
 #include <map>
@@ -67,11 +68,13 @@ class ScalarRemapper {
 public:
     struct RemapConfig {
         std::vector<std::string> scalar_var_names;  // Variables to remap
-        ParallelPointCloudReader::CoordinateType search_radius = 0.0;                 // Search radius (0 = unlimited)
+        // ParallelPointCloudReader::CoordinateType search_radius = 0.0;                 // Search radius (0 = unlimited)
         int max_neighbors = 1;                      // Maximum neighbors to consider
         bool use_element_centroids = true;          // Use element centroids vs vertices
         bool normalize_weights = true;              // Normalize interpolation weights
         bool is_usgs_format = false;                 // Use USGS format for point cloud
+        bool use_kd_tree = false;                   // Use KD-tree (true) or RegularGridLocator (false) for USGS format
+        RegularGridLocator::DistanceMetric distance_metric = RegularGridLocator::HAVERSINE; // Distance metric for RegularGridLocator
 
         // Spectral element projection parameters
         int spectral_order = 4;                     // Spectral element order (nP)
@@ -122,12 +125,16 @@ protected:
     std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>>  find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
                           const ParallelPointCloudReader::PointData& point_data, const size_t *max_neighbors = nullptr, const ParallelPointCloudReader::CoordinateType* search_radius = nullptr);
 
-    // KD-tree members for fast nearest neighbor queries
+    // Spatial query members: KD-tree or RegularGridLocator
     std::unique_ptr<PointCloudAdapter> m_adapter;
     std::unique_ptr<KDTree> m_kdtree;
+    std::unique_ptr<RegularGridLocator> m_grid_locator;
     bool m_kdtree_built;
+    bool m_grid_locator_built;
 
     ErrorCode build_kdtree(const ParallelPointCloudReader::PointData& point_data);
+    ErrorCode build_grid_locator(const ParallelPointCloudReader::PointData& point_data);
+
 };
 
 /**

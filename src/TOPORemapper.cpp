@@ -59,7 +59,7 @@ int main(int argc, char* argv[]) {
         config.netcdf_filename = netcdf_filename;
         // config.coord_var_names = {"xc", "yc"};  // Coordinate variables from NetCDF file
         // config.scalar_var_names = {"mask", "area", "frac"};  // Available scalar variables
-        config.buffer_factor = 0.0;  // 1% buffer around mesh bounding box
+        config.buffer_factor = 0.05;  // 1% buffer around mesh bounding box
         // config.chunk_size = 25000000;   // Process 25M points at a time
         config.use_collective_io = true;
         config.convert_lonlat_to_xyz = true;  // Convert from lon/lat degrees to Cartesian
@@ -147,7 +147,7 @@ int main(int argc, char* argv[]) {
                 // remap_config.scalar_var_names = {"mask", "area", "frac"};
                 // if using USGS-rawdata, then use the following
                 remap_config.scalar_var_names = reader.get_config().scalar_var_names; // {"htopo", "landfract"};
-                remap_config.search_radius = 0.0;  // No search radius limit
+                // remap_config.search_radius = 0.0;  // No search radius limit
                 remap_config.max_neighbors = 1;    // Nearest neighbor only
                 remap_config.spectral_order = 4;   // Spectral element order
                 remap_config.continuous_gll = true; // Use continuous GLL nodes

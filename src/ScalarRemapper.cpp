@@ -8,6 +8,7 @@
 #include <limits>
 #include <chrono>
 #include <numeric>
+#include <set>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -15,20 +16,26 @@
 
 namespace moab {
 
-static double compute_distance(const ParallelPointCloudReader::PointType3D& p1, const ParallelPointCloudReader::PointType& p2) {
-
-    ParallelPointCloudReader::PointType3D p2_3d;
-    RLLtoXYZ_Deg(p2[0], p2[1], p2_3d);
-
-    double dMag = 0.0;
+template<typename T>
+static typename T::value_type compute_distance(const T& p1, const T& p2) {
+    typename T::value_type dMag = 0.0;
     for (size_t i = 0; i < p1.size(); ++i) {
-        dMag += (p1[i] - p2_3d[i])*(p1[i] - p2_3d[i]);
+        dMag += (p1[i] - p2[i])*(p1[i] - p2[i]);
     }
     return std::sqrt(dMag);
 }
 
+static ParallelPointCloudReader::CoordinateType compute_distance(const ParallelPointCloudReader::PointType3D& p1, const ParallelPointCloudReader::PointType& p2) {
+
+    ParallelPointCloudReader::PointType3D p2_3d;
+    RLLtoXYZ_Deg(p2[0], p2[1], p2_3d);
+
+    return compute_distance(p1, p2_3d);
+}
+
+
 ScalarRemapper::ScalarRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
-    : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set), m_kdtree_built(false) {
+    : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set), m_kdtree_built(false), m_grid_locator_built(false) {
 }
 
 ErrorCode ScalarRemapper::configure(const RemapConfig& config) {
@@ -265,6 +272,52 @@ NearestNeighborRemapper::~NearestNeighborRemapper() {
     // KD-tree cleanup handled automatically by unique_ptr
 }
 
+ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::PointData& point_data) {
+    if (point_data.lonlat_coordinates.empty()) {
+        return MB_FAILURE;
+    }
+
+    try {
+        if (m_pcomm->rank() == 0) {
+            std::cout << "Building RegularGridLocator for USGS format data..." << std::endl;
+        }
+
+        // For USGS format, we need to extract unique lat/lon values from the point cloud
+        // Since the data is organized as a regular grid, we can extract unique coordinates
+        std::vector<double> lats, lons;
+        std::set<double> unique_lats, unique_lons;
+
+        for (const auto& pt : point_data.lonlat_coordinates) {
+            unique_lons.insert(pt[0]);
+            unique_lats.insert(pt[1]);
+        }
+
+        lons.assign(unique_lons.begin(), unique_lons.end());
+        lats.assign(unique_lats.begin(), unique_lats.end());
+
+        if (m_pcomm->rank() == 0) {
+            std::cout << "Detected grid dimensions: " << lats.size() << " x " << lons.size() << std::endl;
+        }
+
+        auto build_start = std::chrono::high_resolution_clock::now();
+        m_grid_locator = std::unique_ptr<RegularGridLocator>(
+            new RegularGridLocator(lats, lons, m_config.distance_metric));
+        m_grid_locator_built = true;
+
+        auto build_end = std::chrono::high_resolution_clock::now();
+        auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
+        if (m_pcomm->rank() == 0) {
+            std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+        }
+
+        return MB_SUCCESS;
+    } catch (const std::exception& e) {
+        std::cerr << "Error building RegularGridLocator: " << e.what() << std::endl;
+        m_grid_locator_built = false;
+        return MB_FAILURE;
+    }
+}
+
 ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData& point_data) {
     if (point_data.lonlat_coordinates.empty()) {
         return MB_FAILURE;
@@ -321,9 +374,15 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
         return MB_SUCCESS;
     }
 
-    // Build KD-tree for fast nearest neighbor queries
-    if (!m_kdtree_built) {
-        MB_CHK_ERR(build_kdtree(point_data));
+    // Build spatial index (KD-tree or RegularGridLocator)
+    if (m_config.is_usgs_format && !m_config.use_kd_tree) {
+        if (!m_grid_locator_built) {
+            MB_CHK_ERR(build_grid_locator(point_data));
+        }
+    } else {
+        if (!m_kdtree_built) {
+            MB_CHK_ERR(build_kdtree(point_data));
+        }
     }
 
     std::cout.flush();
@@ -376,12 +435,40 @@ std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateTy
                                              const size_t* user_max_neighbors,
                                             const ParallelPointCloudReader::CoordinateType* user_search_radius) {
     size_t max_neighbors = 1;
-    ParallelPointCloudReader::CoordinateType search_radius = m_config.search_radius;
+    ParallelPointCloudReader::CoordinateType search_radius = 0.0;
 
     if (user_max_neighbors) max_neighbors = *user_max_neighbors;
     if (user_search_radius) search_radius = *user_search_radius;
 
     std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> ret_matches;
+
+    // Use RegularGridLocator for USGS format if enabled
+    if (m_config.is_usgs_format && !m_config.use_kd_tree && m_grid_locator_built && m_grid_locator) {
+        // Convert 3D Cartesian to lon/lat for grid query
+        ParallelPointCloudReader::CoordinateType lon, lat;
+        XYZtoRLL_Deg(target_point.data(), lon, lat);
+        ParallelPointCloudReader::PointType3D query_pt = {lon, lat, 0.0};
+
+        if (search_radius > 0.0) {
+            // Radius search
+            size_t num_matches = m_grid_locator->radiusSearch(query_pt, search_radius, ret_matches);
+            if (num_matches == 0) {
+                ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0));
+            }
+        } else {
+            // kNN search
+            std::vector<size_t> indices(max_neighbors);
+            std::vector<ParallelPointCloudReader::CoordinateType> distances_sq(max_neighbors);
+            m_grid_locator->knnSearch(query_pt, max_neighbors, indices.data(), distances_sq.data());
+
+            for (size_t i = 0; i < max_neighbors; ++i) {
+                ret_matches.push_back({indices[i], distances_sq[i]});
+            }
+        }
+        return ret_matches;
+    }
+
+    // Fallback to KD-tree or linear search
     if (!m_kdtree_built || !m_kdtree) {
         // Fallback to linear search if KD-tree is not available
         size_t nearest_idx = static_cast<size_t>(-1);
@@ -509,6 +596,7 @@ std::vector<InverseDistanceRemapper::WeightedPoint>
 InverseDistanceRemapper::find_weighted_neighbors(const ParallelPointCloudReader::PointType3D& target_point,
                                                 const ParallelPointCloudReader::PointData& point_data) {
     std::vector<WeightedPoint> weighted_points;
+    constexpr double search_radius = 0.0;
 
     // const auto coordpoint = target_point.data();
     // ParallelPointCloudReader::CoordinateType lon, lat;
@@ -517,7 +605,7 @@ InverseDistanceRemapper::find_weighted_neighbors(const ParallelPointCloudReader:
         ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, point_data.lonlat_coordinates[i]);
 
         // Check search radius constraint
-        if (m_config.search_radius > 0.0 && distance > m_config.search_radius) {
+        if (search_radius > 0.0 && distance > search_radius) {
             continue;
         }
 
@@ -885,9 +973,15 @@ ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointClo
     // Validate that mesh contains only quadrilaterals
     // MB_CHK_ERR(validate_quadrilateral_mesh());
 
-    // Build KD-tree for fast nearest neighbor queries
-    if (!m_kdtree_built) {
-        MB_CHK_ERR(this->build_kdtree(point_data));
+    // Build spatial index (KD-tree or RegularGridLocator)
+    if (m_config.is_usgs_format && !m_config.use_kd_tree) {
+        if (!m_grid_locator_built) {
+            MB_CHK_ERR(build_grid_locator(point_data));
+        }
+    } else {
+        if (!m_kdtree_built) {
+            MB_CHK_ERR(this->build_kdtree(point_data));
+        }
     }
 
     std::cout.flush();
