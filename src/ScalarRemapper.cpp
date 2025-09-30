@@ -995,7 +995,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         // Initialize element-averaged values (thread-local)
         std::unordered_map<std::string, double> element_averages_d;
         // std::unordered_map<std::string, int> element_averages_i;
-        double total_weight = 0.0;
+        std::unordered_map<std::string, double> total_weights;  // Per-variable weight tracking
 
         // Pre-compute all GLL node coordinates for this element (vectorizable)
         std::vector<bool> gll_valid(nP * nP, false);
@@ -1012,7 +1012,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                     continue;
                 }
 
-                // GLL point query format (aligned for SIMD)
+                // GLL point in 3D Cartesian coordinates (matches KD-tree coordinate system)
                 ParallelPointCloudReader::PointType3D gll_point = {
                     static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[0]),
                     static_cast<ParallelPointCloudReader::CoordinateType>(nodeGLL[1]),
@@ -1029,26 +1029,30 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 matches.clear();
 
                 // Compute weighted average from neighboring points (vectorized)
-                const double gll_weight = (dataGLLJacobian[gll_idx]); // the Jacobian of the GLL point
-                const ParallelPointCloudReader::CoordinateType search_radius = gll_weight;
+                const ParallelPointCloudReader::CoordinateType search_radius = dataGLLJacobian[gll_idx];
                 const size_t max_neighbors = 5000; // if it exceeds, perhaps SE mesh resolution is too coarse?
 
                 auto nearest_points = find_nearest_point(gll_point, point_data, nullptr, &search_radius);
 
-                // size_t found_count = m_kdtree->radiusSearch(gll_point.data(), search_radius, matches, params);
-                size_t found_count = nearest_points.size();
+                // Check if radius search found valid results (not just dummy -1 index)
+                bool has_valid_results = !nearest_points.empty() &&
+                                         nearest_points[0].first != static_cast<size_t>(-1);
 
-                // if (elem_idx < 100) std::cout << "Found max neighbors " << found_count << " for element " << elem_idx << " with search radius = " << search_radius << std::endl;
-
-                if (found_count > 0) {
-                    // Use radius search results (vectorized copy)
-                    size_t use_count = std::min(found_count, max_neighbors);
-                    // if (use_count == max_neighbors) std::cout << m_pcomm->rank() << ": Exceeded max neighbors " << max_neighbors << ", with true count = " << found_count << " for element " << elem_idx << " with search radius = " << search_radius << std::endl;
-                } else {
-                    // Fallback to nearest neighbor
+                if (!has_valid_results) {
+                    // Fallback to nearest neighbor WITHOUT radius constraint
                     const size_t single_neighbor = 1;
-                    nearest_points = find_nearest_point(gll_point, point_data, &single_neighbor);
-                    // std::cout << m_pcomm->rank() << ": Did not find any in search radius " << search_radius << ". Using single neighbor for element " << elem_idx << std::endl;
+                    const ParallelPointCloudReader::CoordinateType no_radius = 0.0;  // 0.0 means no radius constraint
+                    nearest_points = find_nearest_point(gll_point, point_data, &single_neighbor, &no_radius);
+                }
+
+                // Check if we still have zero points after fallback
+                if (nearest_points.empty()) {
+                    if (elem_idx < 10) {
+                        #pragma omp critical
+                        std::cout << "WARNING: Element " << elem_idx << ", GLL node (" << i << "," << j
+                                  << ") has ZERO neighbors even after fallback!" << std::endl;
+                    }
+                    continue; // Skip this GLL node
                 }
 
                 // Pre-compute inverse distance weights (vectorizable)
@@ -1063,10 +1067,18 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 //     inv_weights[k] = 1.0 / (distance + 1e-10);
                 // }
 
+                // const double gll_weight_extensive = dW[i]*dW[j]*dataGLLJacobian[gll_idx]; // For extensive properties (area, mass)
+                // const double gll_weight_intensive = dW[i]*dW[j]; // For intensive properties (fractions, ratios) - NO Jacobian!
+                const double gll_weight = dW[i]*dW[j];
+
                 // Process each scalar variable
                 for (const auto& var_name : m_config.scalar_var_names) {
                     double weighted_sum = 0.0;
                     double weight_sum = 0.0;
+
+                    // Determine if this is an extensive property (needs Jacobian)
+                    // bool is_extensive = (var_name == "area");
+                    // const double gll_weight = is_extensive ? gll_weight_extensive : gll_weight_intensive;
 
                     // Check if it's a double variable
                     auto var_it = point_data.d_scalar_variables.find(var_name);
@@ -1101,44 +1113,43 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                     }
 
                     // Add GLL-weighted contribution to element average
-                    if (fabs(weight_sum) > 0.0) {
+                    if (fabs(weight_sum) > 0.0)
+                    {
                         double gll_value = weighted_sum / weight_sum;
                         element_averages_d[var_name] += gll_weight * gll_value;
+                        total_weights[var_name] += gll_weight;  // Track weight per variable
                     }
                 }
-
-                total_weight += gll_weight;
             }
         }
 
         // Normalize element averages and store in mesh data (thread-safe writes)
-        if (fabs(total_weight) > 0.0) {
-            const double inv_total_weight = 1.0 / total_weight; // Avoid division in loop
-            for (const auto& var_name : m_config.scalar_var_names) {
-                auto it = element_averages_d.find(var_name);
-                if (it != element_averages_d.end()) {
-                    // if (m_is_usgs_format) {
-                    //     m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second * inv_total_weight);
-                    // } else {
-                    //     m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
-                    // }
-                    {
-                        auto var_it = point_data.d_scalar_variables.find(var_name);
-                        if (var_it != point_data.d_scalar_variables.end()) {
-                            m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
-                        }
-                        else {
-                            auto ivar_it = point_data.i_scalar_variables.find(var_name);
-                            if (ivar_it != point_data.i_scalar_variables.end()) {
-                                m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second *inv_total_weight);
-                            }
-                        }
+        // Use per-variable weights for proper normalization
+        for (const auto& var_name : m_config.scalar_var_names) {
+            auto it = element_averages_d.find(var_name);
+            auto wt_it = total_weights.find(var_name);
+
+            if (it != element_averages_d.end() && wt_it != total_weights.end() && fabs(wt_it->second) > 0.0) {
+                const double inv_total_weight = 1.0 / wt_it->second;
+
+                auto var_it = point_data.d_scalar_variables.find(var_name);
+                if (var_it != point_data.d_scalar_variables.end()) {
+                    m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second * inv_total_weight;
+                }
+                else {
+                    auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                    if (ivar_it != point_data.i_scalar_variables.end()) {
+                        m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second * inv_total_weight);
                     }
                 }
             }
-        } else {
+        }
+
+        // Check if any variable had data
+        if (total_weights.empty()) {
             element_errors[elem_idx] = MB_FAILURE;
         }
+
     } // End of parallel region
 
     // Check for errors after parallel processing
