@@ -134,14 +134,14 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
         if (has_lat && has_lon && has_htopo) {
             m_is_usgs_format = true;
-            
+
             // Get dimension sizes
             PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim(lat_var_name);
             PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim(lon_var_name);
             nlats = lat_dim.getSize();
             nlons = lon_dim.getSize();
             m_total_points = nlats * nlons;
-            
+
             // Set up configuration
             m_config.coord_var_names = {lon_var_name, lat_var_name};
             if (has_fract) {
@@ -149,10 +149,10 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
             } else {
                 m_config.scalar_var_names = {topo_var_name};
             }
-            
+
             if (m_pcomm->rank() == 0) {
                 std::cout << "Detected USGS format NetCDF file" << std::endl;
-                std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), " 
+                std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), "
                           << lon_var_name << " (" << nlons << ")" << std::endl;
                 std::cout << "  Topography variable: " << topo_var_name << std::endl;
                 if (has_fract) {
@@ -183,8 +183,6 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
                 PnetCDF::NcmpiVar coord_var = m_vars.at(lon_var_name);
                 m_total_points = 1;
-                // points.clear();
-                m_unique_points.clear();
                 for (const auto& dim : coord_var.getDims()) {
                     m_total_points *= dim.getSize();
                 }
@@ -211,13 +209,13 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
             std::cout << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" << std::endl;
         }
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Total points in dataset: " << m_total_points << std::endl;
-            for(const auto& var : m_config.scalar_var_names)
-            {
-                std::cout << "Found variable: " << var << std::endl;
-            }
-        }
+        // if (m_pcomm->rank() == 0) {
+        //     std::cout << "Total points in dataset: " << m_total_points << std::endl;
+        //     for(const auto& var : m_config.scalar_var_names)
+        //     {
+        //         std::cout << "Found variable: " << var << std::endl;
+        //     }
+        // }
         return MB_SUCCESS;
 #else
         std::cerr << "Error: MOAB was not built with PnetCDF support" << std::endl;
@@ -228,213 +226,6 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         return MB_FAILURE;
     }
 }
-
-// ErrorCode ParallelPointCloudReader::read_usgs_format(PointData& points) {
-//     try {
-// #ifdef MOAB_HAVE_PNETCDF
-//         // Get dimensions using PnetCDF API
-//         PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim("lat");
-//         PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim("lon");
-
-//         const size_t nlat = lat_dim.getSize();
-//         const size_t nlon = lon_dim.getSize();
-//         m_total_points = nlat * nlon;
-
-//         if (m_pcomm->rank() == 0) {
-//             std::cout << "USGS format: " << nlat << " x " << nlon << " = " << m_total_points << " points" << std::endl;
-//         }
-
-//         // Get coordinate variables using PnetCDF API
-//         PnetCDF::NcmpiVar lat_var = m_vars.at("lat");
-//         PnetCDF::NcmpiVar lon_var = m_vars.at("lon");
-
-//         // First, read coordinate arrays to determine spatial bounds
-//         // This is a one-time read of 1D arrays, much smaller than the full 2D data
-//         std::vector<double> lats(nlat);
-//         std::vector<double> lons(nlon);
-
-//         // Read coordinate arrays using PnetCDF collective I/O
-//         std::vector<MPI_Offset> start = {0};
-//         std::vector<MPI_Offset> lat_count = {static_cast<MPI_Offset>(nlat)};
-//         std::vector<MPI_Offset> lon_count = {static_cast<MPI_Offset>(nlon)};
-
-//         lat_var.getVar_all(start, lat_count, lats.data());
-//         lon_var.getVar_all(start, lon_count, lons.data());
-
-//         // For USGS format, compute bounding box directly in lat/lon space from mesh vertices
-//         const BoundingBox& lonlat_bbox = this->m_local_bbox;
-
-//         // Step 1: Each rank reads ntotalpoints/nranks points
-//         size_t nlon_per_rank = nlon / m_pcomm->size();
-//         size_t remainder = nlon % m_pcomm->size();
-
-//         // Last rank gets the remainder nlon
-//         size_t my_start_idx = m_pcomm->rank() * nlon_per_rank;
-//         size_t my_count = nlon_per_rank;
-//         if (m_pcomm->rank() == m_pcomm->size() - 1) {
-//             my_count += remainder;
-//         }
-
-//         // Find the index ranges that intersect with our bounding box
-//         size_t lat_start = 0, lat_chunk_count = nlat;
-//         size_t lon_start = my_start_idx, lon_chunk_count = my_count;
-
-//         // MB_CHK_ERR(find_spatial_index_range(lats, lonlat_bbox.min_coords[1], lonlat_bbox.max_coords[1],
-//         //                                    lat_start, lat_chunk_count));
-//         // MB_CHK_ERR(find_spatial_index_range(lons, lonlat_bbox.min_coords[0], lonlat_bbox.max_coords[0],
-//         //                                    lon_start, lon_chunk_count));
-
-//         // if (m_pcomm->rank() == 0)
-//         {
-//             std::cout << "Process " << m_pcomm->rank() << " reading lat[" << lat_start << ":"
-//                       << lat_start + lat_chunk_count << "] lon[" << lon_start << ":"
-//                       << lon_start + lon_chunk_count << "] = " << lat_chunk_count * lon_chunk_count << " points" << std::endl;
-//         }
-
-//         // Only read the subset of coordinates we need
-//         std::vector<double> local_lats(lat_chunk_count);
-//         std::vector<double> local_lons(lon_chunk_count);
-
-//         // Read coordinate subsets using PnetCDF
-//         std::vector<MPI_Offset> lat_subset_start = {static_cast<MPI_Offset>(lat_start)};
-//         std::vector<MPI_Offset> lat_subset_count = {static_cast<MPI_Offset>(lat_chunk_count)};
-//         std::vector<MPI_Offset> lon_subset_start = {static_cast<MPI_Offset>(lon_start)};
-//         std::vector<MPI_Offset> lon_subset_count = {static_cast<MPI_Offset>(lon_chunk_count)};
-
-//         lat_var.getVar_all(lat_subset_start, lat_subset_count, local_lats.data());
-//         lon_var.getVar_all(lon_subset_start, lon_subset_count, local_lons.data());
-
-//         // Create point cloud from the subset and track valid indices
-//         // points.coordinates.reserve(lat_chunk_count * lon_chunk_count);
-//         points.lonlat_coordinates.reserve(lat_chunk_count * lon_chunk_count);
-//         std::vector<std::pair<size_t, size_t>> valid_indices; // Store (i,j) pairs for valid coordinates
-
-//         for (size_t i = 0; i < lat_chunk_count; ++i) {
-//             for (size_t j = 0; j < lon_chunk_count; ++j) {
-//                 double lon = local_lons[j];
-//                 double lat = local_lats[i];
-
-//                 // Check if this lat/lon point is within our bounding box
-//                 if (lon >= lonlat_bbox.min_coords[0] && lon <= lonlat_bbox.max_coords[0] &&
-//                     lat >= lonlat_bbox.min_coords[1] && lat <= lonlat_bbox.max_coords[1]) {
-//                     PointType current_point = {lon, lat};
-//                     auto pit = m_unique_points.find(current_point);
-//                     if (pit == m_unique_points.end()) {
-//                         points.lonlat_coordinates.push_back(current_point);
-//                         valid_indices.push_back({i, j});
-//                         m_unique_points.insert(current_point);
-//                     }
-//                 }
-//             }
-//         }
-
-//         // if (m_pcomm->rank() == 0)
-//         {
-//             std::cout << "Process " << m_pcomm->rank() << " found " << points.lonlat_coordinates.size()
-//                       << " points within bounding box from " << lat_chunk_count * lon_chunk_count << " candidates" << std::endl;
-//         }
-
-//         // Read scalar variables (htopo, landfract) using PnetCDF
-//         for (const std::string& var_name : m_config.scalar_var_names) {
-//             auto var_it = m_vars.find(var_name);
-//             if (var_it != m_vars.end()) {
-//                 PnetCDF::NcmpiVar var = var_it->second;
-
-//                 try {
-//                     if (m_pcomm->rank() == 0) {
-//                         std::cout << "Attempting to read variable '" << var_name
-//                                   << "' subset: lat_start=" << lat_start << ", lon_start=" << lon_start
-//                                   << ", lat_count=" << lat_chunk_count << ", lon_count=" << lon_chunk_count << std::endl;
-//                     }
-
-//                     // Check if the request size exceeds INT_MAX and implement chunked reading
-//                     size_t total_elements = lat_chunk_count * lon_chunk_count;
-//                     const size_t MAX_CHUNK_SIZE = 100000000; // 100M elements to stay well below INT_MAX
-
-//                     std::vector<int> local_var_data;
-//                     local_var_data.reserve(total_elements);
-
-//                     if (total_elements > MAX_CHUNK_SIZE) {
-//                         if (m_pcomm->rank() == 0) {
-//                             std::cout << "Large dataset detected (" << total_elements
-//                                       << " elements). Using chunked reading..." << std::endl;
-//                         }
-
-//                         // Read in chunks along the latitude dimension
-//                         size_t lat_chunk_size = MAX_CHUNK_SIZE / lon_chunk_count;
-//                         if (lat_chunk_size == 0) lat_chunk_size = 1;
-
-//                         for (size_t lat_offset = 0; lat_offset < lat_chunk_count; lat_offset += lat_chunk_size) {
-//                             size_t current_lat_count = std::min(lat_chunk_size, lat_chunk_count - lat_offset);
-//                             size_t chunk_elements = current_lat_count * lon_chunk_count;
-
-//                             std::vector<int> chunk_data(chunk_elements);
-//                             std::vector<MPI_Offset> chunk_start = {
-//                                 static_cast<MPI_Offset>(lat_start + lat_offset),
-//                                 static_cast<MPI_Offset>(lon_start)
-//                             };
-//                             std::vector<MPI_Offset> chunk_count = {
-//                                 static_cast<MPI_Offset>(current_lat_count),
-//                                 static_cast<MPI_Offset>(lon_chunk_count)
-//                             };
-
-//                             var.getVar_all(chunk_start, chunk_count, chunk_data.data());
-
-//                             // Append to main data vector
-//                             local_var_data.insert(local_var_data.end(), chunk_data.begin(), chunk_data.end());
-
-//                             if (m_pcomm->rank() == 0) {
-//                                 std::cout << "Read chunk " << (lat_offset / lat_chunk_size + 1)
-//                                           << " (" << chunk_elements << " elements)" << std::endl;
-//                             }
-//                         }
-//                     } else {
-//                         // Small enough to read in one operation
-//                         local_var_data.resize(total_elements);
-//                         std::vector<MPI_Offset> var_start = {static_cast<MPI_Offset>(lat_start), static_cast<MPI_Offset>(lon_start)};
-//                         std::vector<MPI_Offset> var_count = {static_cast<MPI_Offset>(lat_chunk_count), static_cast<MPI_Offset>(lon_chunk_count)};
-//                         var.getVar_all(var_start, var_count, local_var_data.data());
-//                     }
-
-//                     if (m_pcomm->rank() == 0) {
-//                         std::cout << "Successfully read " << local_var_data.size() << " values for '" << var_name << "'" << std::endl;
-//                     }
-
-//                     // Extract data using the same valid indices from coordinate generation
-//                     std::vector<double> filtered_data;
-//                     filtered_data.reserve(valid_indices.size());
-
-//                     for (const auto& idx_pair : valid_indices) {
-//                         size_t i = idx_pair.first;
-//                         size_t j = idx_pair.second;
-//                         size_t data_idx = i * lon_chunk_count + j;
-//                         filtered_data.push_back(local_var_data[data_idx]);
-//                     }
-
-//                     points.scalar_variables[var_name] = std::move(filtered_data);
-
-//                     if (m_pcomm->rank() == 0) {
-//                         std::cout << "Read " << filtered_data.size() << " values for variable '"
-//                                   << var_name << "' (coordinates: " << points.lonlat_coordinates.size()
-//                                   << ", lat_count: " << lat_chunk_count << ", lon_count: " << lon_chunk_count << ")" << std::endl;
-//                     }
-
-//                 } catch (const std::exception& e) {
-//                     if (m_pcomm->rank() == 0) {
-//                         std::cerr << "Warning: Failed to read variable '" << var_name
-//                                   << "': " << e.what() << std::endl;
-//                     }
-//                 }
-//             }
-//         }
-
-//         return MB_SUCCESS;
-// #endif
-//     } catch (const std::exception& e) {
-//         std::cerr << "Error in read_usgs_format(): " << e.what() << std::endl;
-//         return MB_FAILURE;
-//     }
-// }
 
 
 ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(BoundingBox& lonlat_bbox) {
@@ -481,12 +272,12 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
         lonlat_bbox.expand(m_config.buffer_factor);
 
     // Ensure longitude stays within [0, 180] bounds and latitude within [-90, 90]
-    // assert(lonlat_bbox.min_coords[0] >= 0.0);
-    // assert(lonlat_bbox.min_coords[1] >= -90.0);
-    // if(lonlat_bbox.max_coords[0] > 360.0)
-    // std::cout << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" << std::endl;
-    // assert(lonlat_bbox.max_coords[0] <= 360.0);
-    // assert(lonlat_bbox.max_coords[1] <= 90.0);
+    assert(lonlat_bbox.min_coords[0] >= 0.0);
+    assert(lonlat_bbox.min_coords[1] >= -90.0);
+    if(lonlat_bbox.max_coords[0] > 360.0)
+        std::cout << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" << std::endl;
+    assert(lonlat_bbox.max_coords[0] <= 360.0);
+    assert(lonlat_bbox.max_coords[1] <= 90.0);
 
     {
         std::cout << m_pcomm->rank() << ": Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
@@ -498,7 +289,6 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
 }
 
 ErrorCode ParallelPointCloudReader::gather_all_bounding_boxes(std::vector<BoundingBox>& all_bboxes) {
-    // int rank = m_pcomm->rank(); // Unused variable
     size_t size = m_pcomm->size();
 
     // Prepare local bounding box data for communication
@@ -708,15 +498,8 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 
             // Check if this is USGS format (lat x lon grid)
             if (m_is_usgs_format || (dims[0].getName() == "lat" && dims[1].getName() == "lon")) {
-                // USGS format: use spatial filtering to read only needed subset
-                // This should have been set up in read_usgs_format()
+                // USGS format: use spatial filtering to read only needed subset?
 
-                // For now, return failure to avoid reading the entire massive dataset
-                // if (m_pcomm->rank() == 0) {
-                //     std::cout << "Skipping large USGS 2D variable '" << var_name
-                //               << "' (" << dim0_size << " x " << dim1_size << " = " << total_size << " points)" << std::endl;
-                // }
-                // return MB_FAILURE;
                 size_t total_elements_to_read = nlats_count * nlons_count;
                 const size_t MAX_ELEMENTS_PER_CHUNK = 500*1000*1000; // 100M elements, well below INT_MAX
 
@@ -754,7 +537,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                 }
 
                 // The temp_buffer now contains the raw 2D data block for this rank's slice.
-                // The caller (`read_points_distributed`) will be responsible for filtering this data
+                // The caller will be responsible for filtering this data
                 // using the valid_indices it generates during coordinate processing.
                 data = std::move(temp_buffer);
             } else {
@@ -798,237 +581,25 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 }
 
 
-// moab::ErrorCode moab::ParallelPointCloudReader::read_and_distribute_root_based(PointData& local_points) {
-//     if (m_pcomm->rank() == 0) {
-//         std::cout << "Using root-based buffered distribution system" << std::endl;
-//     }
-
-//     // Step 1: Gather all bounding boxes on root
-//     MB_CHK_ERR(gather_all_bounding_boxes_on_root());
-
-//     // Step 2: Root reads and distributes data, also accumulates its own data
-//     if (m_pcomm->rank() == 0) {
-//         MB_CHK_ERR(root_read_and_distribute_points(local_points));
-//     } else {
-//         // Step 3: Non-root ranks receive their distributed data
-//         MB_CHK_ERR(receive_distributed_data(local_points));
-//     }
-
-//     return MB_SUCCESS;
-// }
-
-// moab::ErrorCode moab::ParallelPointCloudReader::gather_all_bounding_boxes_on_root() {
-//     int num_ranks = m_pcomm->size();
-
-//     // Prepare local bounding box data for sending
-//     std::vector<double> local_bbox_data(6);
-//     for (int i = 0; i < 3; i++) {
-//         local_bbox_data[i] = m_local_bbox.min_coords[i];
-//         local_bbox_data[i + 3] = m_local_bbox.max_coords[i];
-//     }
-
-//     if (m_pcomm->rank() == 0) {
-//         m_all_bboxes.resize(num_ranks);
-//         std::vector<double> all_bbox_data(num_ranks * 6);
-
-//         // Gather all bounding boxes
-//         MPI_Gather(local_bbox_data.data(), 6, MPI_DOUBLE,
-//                    all_bbox_data.data(), 6, MPI_DOUBLE, 0, m_pcomm->comm());
-
-//         // Convert to BoundingBox structures
-//         for (int rank = 0; rank < num_ranks; rank++) {
-//             for (int i = 0; i < 3; i++) {
-//                 m_all_bboxes[rank].min_coords[i] = all_bbox_data[rank * 6 + i];
-//                 m_all_bboxes[rank].max_coords[i] = all_bbox_data[rank * 6 + i + 3];
-//             }
-//         }
-
-//         std::cout << "Gathered bounding boxes from " << num_ranks << " ranks" << std::endl;
-//     } else {
-//         // Non-root ranks just send their bounding box
-//         MPI_Gather(local_bbox_data.data(), 6, MPI_DOUBLE,
-//                    nullptr, 0, MPI_DOUBLE, 0, m_pcomm->comm());
-//     }
-
-//     return MB_SUCCESS;
-// }
-
-// moab::ErrorCode moab::ParallelPointCloudReader::root_read_and_distribute_points(PointData& root_local_points) {
-//     if (m_pcomm->rank() != 0) return MB_SUCCESS;
-
-//     std::cout << "Root process reading and distributing " << m_total_points << " points" << std::endl;
-
-//     int num_ranks = m_pcomm->size();
-//     std::vector<PointBuffer> rank_buffers(num_ranks);
-
-//     // Initialize root's local data
-//     root_local_points.clear();
-//     for (const auto& var_name : m_config.scalar_var_names) {
-//         root_local_points.scalar_variables[var_name] = std::vector<double>();
-//     }
-
-//     // Initialize scalar and vector variable buffers for all ranks
-//     for (int rank = 0; rank < num_ranks; rank++) {
-//         for (const auto& var_name : m_config.scalar_var_names) {
-//             rank_buffers[rank].scalar_variables[var_name] = std::vector<double>();
-//         }
-//     }
-
-//     // Read data in chunks and distribute
-//     std::vector<std::array<double, 3>> chunk_coords;
-//     std::unordered_map<std::string, std::vector<double>> chunk_scalars;
-//     std::unordered_map<std::string, std::vector<double>> chunk_vectors;
-
-//     size_t points_processed = 0;
-
-//     while (points_processed < m_total_points) {
-//         size_t chunk_size = std::min(m_config.chunk_size, m_total_points - points_processed);
-
-//         // Read coordinates
-//         chunk_coords.clear();
-//         if (read_coordinates_chunk(points_processed, chunk_size, chunk_coords) != MB_SUCCESS) {
-//             std::cerr << "Error reading coordinates chunk at " << points_processed << std::endl;
-//             return MB_FAILURE;
-//         }
-
-//         // Read scalar variables
-//         for (const auto& var_name : m_config.scalar_var_names) {
-//             chunk_scalars[var_name].clear();
-//             if (read_scalar_variable_chunk(var_name, points_processed, chunk_size, chunk_scalars[var_name]) != MB_SUCCESS) {
-//                 std::cerr << "Error reading scalar variable " << var_name << " at " << points_processed << std::endl;
-//                 return MB_FAILURE;
-//             }
-//         }
-
-//         // Distribute points to appropriate ranks
-//         for (size_t i = 0; i < chunk_coords.size(); i++) {
-//             std::vector<int> owner_ranks;
-//             if (determine_point_owners(chunk_coords[i], owner_ranks) != MB_SUCCESS) {
-//                 continue; // Skip points that don't belong to any rank
-//             }
-
-//             // Add point to all owner ranks
-//             for (int rank : owner_ranks) {
-//                 if (rank == 0) {
-//                     // Add directly to root's local data
-//                     root_local_points.coordinates.push_back(chunk_coords[i]);
-
-//                     // Add scalar data
-//                     for (const auto& var_name : m_config.scalar_var_names) {
-//                         root_local_points.scalar_variables[var_name].push_back(chunk_scalars[var_name][i]);
-//                     }
-
-//                 } else {
-//                     // Add to buffer for other ranks
-//                     rank_buffers[rank].coordinates.push_back(chunk_coords[i]);
-
-//                     // Add scalar data
-//                     for (const auto& var_name : m_config.scalar_var_names) {
-//                         rank_buffers[rank].scalar_variables[var_name].push_back(chunk_scalars[var_name][i]);
-//                     }
-
-//                 }
-//             }
-//         }
-
-//         points_processed += chunk_size;
-
-//         // Send buffers if they exceed the size limit
-//         for (int rank = 0; rank < num_ranks; rank++) {
-//             if (rank_buffers[rank].memory_size() >= m_buffer_size_per_rank) {
-//                 if (send_buffered_data_to_ranks(rank_buffers) != MB_SUCCESS) {
-//                     std::cerr << "Error sending buffered data" << std::endl;
-//                     return MB_FAILURE;
-//                 }
-//                 // Clear buffers after sending
-//                 for (int r = 0; r < num_ranks; r++) {
-//                     rank_buffers[r].clear();
-//                     // Reinitialize variable maps
-//                     for (const auto& var_name : m_config.scalar_var_names) {
-//                         rank_buffers[r].scalar_variables[var_name] = std::vector<double>();
-//                     }
-//                 }
-//                 break; // Send all buffers at once, then continue
-//             }
-//         }
-
-//         if (points_processed % (m_config.chunk_size * 10) == 0) {
-//             std::cout << "Processed " << points_processed << " / " << m_total_points
-//                       << " points (" << (100.0 * points_processed / m_total_points) << "%)" << std::endl;
-//         }
-//     }
-
-//     // Send any remaining buffered data
-//     if (send_buffered_data_to_ranks(rank_buffers) != MB_SUCCESS) {
-//         std::cerr << "Error sending final buffered data" << std::endl;
-//         return MB_FAILURE;
-//     }
-
-//     // Send termination signal to all ranks
-//     for (int rank = 1; rank < num_ranks; rank++) {
-//         int termination_signal = -1;
-//         MPI_Send(&termination_signal, 1, MPI_INT, rank, 0, m_pcomm->comm());
-//     }
-
-//     std::cout << "Root process completed data distribution. Root has "
-//               << root_local_points.coordinates.size() << " local points" << std::endl;
-//     return MB_SUCCESS;
-// }
-
-moab::ErrorCode moab::ParallelPointCloudReader::determine_point_owners(const PointType& point, std::vector<int>& owner_ranks) {
-    owner_ranks.clear();
-
-    for (int rank = 0; rank < static_cast<int>(m_all_bboxes.size()); rank++) {
-        if (m_all_bboxes[rank].contains(point)) {
-            owner_ranks.push_back(rank);
-        }
-    }
-
-    return MB_SUCCESS;
-}
-
 moab::ErrorCode moab::ParallelPointCloudReader::read_and_redistribute_distributed(PointData& local_points) {
     if (m_pcomm->rank() == 0) {
         std::cout << "=== Starting distributed reading and redistribution ===" << std::endl;
     }
 
-    // Step 1: Each rank reads ntotalpoints/nranks points
-    size_t points_per_rank = (nlons / m_pcomm->size());
-    size_t remainder = (nlons % m_pcomm->size());
-
-    // Last rank gets the remainder points
-    size_t my_count = points_per_rank;
-    std::cout << "Remainder: " << remainder << std::endl;
-    if (m_pcomm->rank() < remainder) {
-        my_count++;
-    }
-
-    size_t my_start_idx = points_per_rank * (m_pcomm->rank());
-    for (size_t irank = 0; irank < m_pcomm->rank(); irank++) {
-        if (irank < remainder) {
-            my_start_idx++;
-        }
-    }
-
-    assert(my_start_idx >=0 && my_count > 0);
-
     nlats_start = 0;
     nlats_count = nlats;
-    nlons_start = my_start_idx;
-    nlons_count = my_count;
+    nlons_start = 0;
+    nlons_count = nlons;
 
     // now let us scale by number of latitudes
-    points_per_rank *= nlats;
-    my_count *= nlats;
-    my_start_idx *= nlats;
+    const size_t points_per_rank = nlons * nlats;
+    const size_t my_count = nlons_count * nlats_count;
+    const size_t my_start_idx = 0;
 
     if (m_pcomm->rank() == 0) {
         std::cout << "Each rank reading ~" << points_per_rank << " points" << std::endl;
         std::cout << "Total points: " << m_total_points << ", ranks: " << m_pcomm->size() << std::endl;
     }
-
-    std::cout << "Rank " << m_pcomm->rank() << " reading points [" << my_start_idx
-              << ", " << (my_start_idx + my_count - 1) << "] = " << my_count << " points" << std::endl;
 
     // Step 2: Read my chunk of data
     MB_CHK_ERR(read_local_chunk_distributed(my_start_idx, my_count, local_points));
@@ -1041,120 +612,10 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_and_redistribute_distribute
     // Step 4: Redistribute points based on bounding box ownership
     // MB_CHK_ERR(redistribute_points_by_ownership(initial_points, local_points));
 
-    // Gather statistics
-    size_t local_count = local_points.size();
-    std::vector<size_t> all_counts(m_pcomm->size());
-    MPI_Gather(&local_count, 1, MPI_UNSIGNED_LONG, all_counts.data(), 1, MPI_UNSIGNED_LONG, 0, m_pcomm->comm());
-
-    size_t total_points = 0;
-    if (m_pcomm->rank() == 0) {
-        for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-            total_points += all_counts[irank];
-            std::cout << "Rank " << irank << " final points: " << all_counts[irank] << std::endl;
-        }
-        std::cout << "Total points before redistribution: " << total_points << std::endl;
-    }
-
     // let us delete the file handle so that we can do
     // everything else in memory
     delete m_ncfile;
     m_ncfile = nullptr;
-
-    if (m_pcomm->size() > 1) // if we read the data in parallel, redistribute based on ownership
-    {
-        // Crystal router-based redistribution using mesh bounding boxes
-        ParallelPointCloudDistributor distributor(m_interface, m_pcomm, m_is_usgs_format);
-        // Create configuration options to control the behavior
-        ParallelPointCloudDistributor::CrystalRouterConfig dist_config;
-        dist_config.allow_multiple_ownership = true;
-
-        // Limit buffer factor for large datasets to prevent MPI overflow
-        // double safe_buffer_factor = m_config.buffer_factor;
-        // if (m_pcomm->size() > 2 && m_total_points > 1000000) {
-        //     // For large datasets with many ranks, reduce buffer factor to prevent overflow
-        //     safe_buffer_factor = std::min(static_cast<double>(m_config.buffer_factor), 0.01); // Max 1% buffer
-        //     if (m_pcomm->rank() == 0) {
-        //         std::cout << "Large dataset detected (" << m_total_points << " points, "
-        //                   << m_pcomm->size() << " ranks). Reducing buffer factor from "
-        //                   << m_config.buffer_factor << " to " << safe_buffer_factor
-        //                   << " to prevent MPI overflow." << std::endl;
-        //     }
-        // }
-
-        // dist_config.bbox_expansion_factor = safe_buffer_factor; // expansion for better coverage
-        dist_config.enable_statistics = true;
-
-        distributor.configure(dist_config);
-
-        // Gather all mesh bounding boxes from all ranks
-        // std::vector<ParallelPointCloudReader::BoundingBox> all_bboxes;
-        // MB_CHK_ERR(reader.gather_all_bounding_boxes(all_bboxes));
-        const auto& all_bboxes = this->m_all_bboxes;
-
-        ParallelPointCloudReader::PointData redistributed_points;
-        ParallelPointCloudDistributor::DistributionStats stats;
-
-        auto redist_start = std::chrono::high_resolution_clock::now();
-
-        // ErrorCode rval = distributor.redistribute_points_crystal_router(local_points, all_bboxes, redistributed_points, stats);
-        ErrorCode rval = distributor.redistribute_points_batched(local_points, all_bboxes, redistributed_points, stats);
-        if (rval != MB_SUCCESS) {
-            if (m_pcomm->rank() == 0) {
-                std::cerr << "Crystal router redistribution failed, likely due to MPI buffer overflow." << std::endl;
-                std::cerr << "Consider using root-based distribution (use_root_based_distribution=true)" << std::endl;
-                std::cerr << "or reducing buffer_factor for large datasets." << std::endl;
-            }
-            return rval;
-        }
-
-        auto redist_end = std::chrono::high_resolution_clock::now();
-        auto redist_duration = std::chrono::duration_cast<std::chrono::milliseconds>(redist_end - redist_start);
-
-        if (m_pcomm->rank() == 0) {
-            std::cout << "\n=== Crystal Router Redistribution Results ===" << std::endl;
-            std::cout << "Communication time: " << redist_duration.count() /*stats.communication_time_ms*/ << " ms" << std::endl;
-            std::cout << "Points sent: " << stats.points_sent << ", Points received: " << stats.points_received << std::endl;
-            std::cout << "Total transfers: " << stats.total_transfers << std::endl;
-        }
-
-        // Process points (compute some statistics)
-        if (local_points.size() > 0 && m_config.print_statistics) {
-            if (m_pcomm->rank() == 0) {
-                std::cout << "\n=== Scalar Variable Statistics ===" << std::endl;
-            }
-
-            // Compute statistics for each scalar variable
-            for (const auto& var_pair : redistributed_points.d_scalar_variables) {
-                const std::string& var_name = var_pair.first;
-                const std::vector<double>& values = var_pair.second;
-
-                double sum_val = 0.0, min_val = 1e10, max_val = -1e10;
-                for (double val : values) {
-                    sum_val += val;
-                    min_val = std::min(min_val, val);
-                    max_val = std::max(max_val, val);
-                }
-
-                // Global reduction for statistics
-                double global_stats[3] = {sum_val, min_val, -max_val}; // Negative for max reduction
-                double reduced_stats[3];
-                MPI_Allreduce(global_stats, reduced_stats, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-                MPI_Allreduce(global_stats + 1, reduced_stats + 1, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-                MPI_Allreduce(global_stats + 2, reduced_stats + 2, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-                reduced_stats[2] = -reduced_stats[2]; // Convert back to max
-
-                if (m_pcomm->rank() == 0) {
-                    std::cout << var_name << " - Average: " << reduced_stats[0] / redistributed_points.size()
-                              << ", Min: " << reduced_stats[1]
-                              << ", Max: " << reduced_stats[2] << std::endl;
-                }
-            }
-        }
-
-        // Use redistributed points for further processing
-        local_points.clear();
-        local_points = redistributed_points;
-    }
 
     return MB_SUCCESS;
 }
@@ -1239,188 +700,6 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
     }
 }
 
-// moab::ErrorCode moab::ParallelPointCloudReader::redistribute_points_by_ownership(PointData& initial_points, PointData& final_points) {
-//     if (m_pcomm->rank() == 0) {
-//         std::cout << "Starting point redistribution based on bounding box ownership" << std::endl;
-//     }
-
-//     // Step 1: Determine which points this rank needs to send to which other ranks
-//     // Use closest bounding box centroid to distribute points more evenly
-//     std::vector<std::vector<size_t>> points_to_send(m_pcomm->size());
-
-//     // Debug: Print first few points and bounding boxes to understand coordinate system
-//     if (m_pcomm->rank() == 0 && initial_points.coordinates.size() > 0) {
-//         std::cout << "DEBUG: First 3 points (lat/lon):" << std::endl;
-//         for (size_t i = 0; i < std::min(size_t(3), initial_points.lonlat_coordinates.size()); ++i) {
-//             const auto& pt = initial_points.lonlat_coordinates[i];
-//             std::cout << "  Point " << i << ": lon=" << pt[0] << ", lat=" << pt[1] << std::endl;
-//         }
-
-//         std::cout << "DEBUG: Bounding boxes (lat/lon):" << std::endl;
-//         for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//             const auto& bbox = m_all_bboxes[irank];
-//             std::cout << "  Rank " << irank << " bbox: lon[" << bbox.min_coords[0] << ", " << bbox.max_coords[0]
-//                       << "] lat[" << bbox.min_coords[1] << ", " << bbox.max_coords[1] << "]" << std::endl;
-//         }
-//     }
-
-//     for (size_t i = 0; i < initial_points.lonlat_coordinates.size(); ++i) {
-//         const auto& lonlat_point = initial_points.lonlat_coordinates[i];
-
-//         for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//             // Only consider ranks whose bounding boxes actually contain this point (in lat/lon space)
-//             if (m_all_bboxes[irank].contains(lonlat_point)) {
-//                 points_to_send[irank].push_back(i);
-//             }
-//         }
-//     }
-
-//     // Step 2: Exchange send/receive counts
-//     std::vector<int> send_counts(m_pcomm->size(), 0);
-//     std::vector<int> recv_counts(m_pcomm->size(), 0);
-
-//     // Count points to send to each rank
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         send_counts[irank] = static_cast<int>(points_to_send[irank].size());
-//     }
-
-//     // All-to-all exchange: send_counts[i] from this rank becomes recv_counts[this_rank] on rank i
-//     MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
-
-//     // Calculate total points we'll receive
-//     size_t total_recv_points = 0;
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         total_recv_points += recv_counts[irank];
-//     }
-
-//     // Verify that we're sending exactly the number of points we read
-//     size_t total_points_to_send = 0;
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         total_points_to_send += send_counts[irank];
-//     }
-
-//     std::cout << "Rank " << m_pcomm->rank() << " read " << initial_points.coordinates.size()
-//               << " points, will send " << total_points_to_send << " points distributed as: ";
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         std::cout << send_counts[irank] << " ";
-//     }
-//     std::cout << std::endl;
-
-//     // if (total_points_to_send != initial_points.coordinates.size()) {
-//     //     std::cerr << "ERROR: Rank " << m_pcomm->rank() << " point count mismatch! Read "
-//     //               << initial_points.coordinates.size() << " but sending " << total_points_to_send << std::endl;
-//     //     return MB_FAILURE;
-//     // }
-
-//     std::cout << "Rank " << m_pcomm->rank() << " will receive " << total_recv_points
-//               << " points total from ranks: ";
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         if (recv_counts[irank] > 0) std::cout << irank << "(" << recv_counts[irank] << ") ";
-//     }
-//     std::cout << std::endl;
-
-//     // Step 3: Handle local data first (points staying on same rank)
-//     final_points.clear();
-//     final_points.reserve(total_recv_points);
-
-//     if (send_counts[m_pcomm->rank()] > 0) {
-//         for (size_t pt_idx : points_to_send[m_pcomm->rank()]) {
-//             final_points.coordinates.push_back(initial_points.coordinates[pt_idx]);
-//             final_points.lonlat_coordinates.push_back(initial_points.lonlat_coordinates[pt_idx]);
-
-//             for (const auto& var_name : m_config.scalar_var_names) {
-//                 auto var_it = initial_points.scalar_variables.find(var_name);
-//                 if (var_it != initial_points.scalar_variables.end()) {
-//                     final_points.scalar_variables[var_name].push_back(var_it->second[pt_idx]);
-//                 }
-//             }
-//         }
-//     }
-
-//     // Step 4: Exchange data with other ranks using non-blocking point-to-point communication
-//     size_t num_scalars = m_config.scalar_var_names.size();
-//     size_t point_data_size = 2 + num_scalars; // 2 for lon/lat + scalars
-
-//     std::vector<MPI_Request> requests;
-//     std::vector<std::vector<double>> send_buffers(m_pcomm->size());
-//     std::vector<std::vector<double>> recv_buffers(m_pcomm->size());
-
-//     // Post all non-blocking receives
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         if (irank == m_pcomm->rank()) continue;
-//         if (recv_counts[irank] > 0) {
-//             recv_buffers[irank].resize(recv_counts[irank] * point_data_size);
-//             MPI_Request req;
-//             MPI_Irecv(recv_buffers[irank].data(), recv_counts[irank] * point_data_size, MPI_DOUBLE,
-//                       irank, 0, MPI_COMM_WORLD, &req);
-//             requests.push_back(req);
-//         }
-//     }
-
-//     // Post all non-blocking sends
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         if (irank == m_pcomm->rank()) continue;
-//         if (send_counts[irank] > 0) {
-//             send_buffers[irank].resize(send_counts[irank] * point_data_size);
-//             for (size_t i = 0; i < points_to_send[irank].size(); ++i) {
-//                 size_t pt_idx = points_to_send[irank][i];
-//                 send_buffers[irank][i * point_data_size + 0] = initial_points.lonlat_coordinates[pt_idx][0];
-//                 send_buffers[irank][i * point_data_size + 1] = initial_points.lonlat_coordinates[pt_idx][1];
-
-//                 for (size_t j = 0; j < num_scalars; ++j) {
-//                     const auto& var_name = m_config.scalar_var_names[j];
-//                     auto var_it = initial_points.scalar_variables.find(var_name);
-//                     if (var_it != initial_points.scalar_variables.end() && pt_idx < var_it->second.size()) {
-//                         send_buffers[irank][i * point_data_size + 2 + j] = var_it->second[pt_idx];
-//                     } else {
-//                         send_buffers[irank][i * point_data_size + 2 + j] = 0.0; // Default value for missing variables
-//                     }
-//                 }
-//             }
-//             MPI_Request req;
-//             MPI_Isend(send_buffers[irank].data(), send_counts[irank] * point_data_size, MPI_DOUBLE,
-//                       irank, 0, MPI_COMM_WORLD, &req);
-//             requests.push_back(req);
-//         }
-//     }
-
-//     // Wait for all communication to complete
-//     if (!requests.empty()) {
-//         MPI_Waitall(requests.size(), requests.data(), MPI_STATUSES_IGNORE);
-//     }
-
-//     // Process received data
-//     for (size_t irank = 0; irank < m_pcomm->size(); ++irank) {
-//         if (irank == m_pcomm->rank()) continue;
-//         if (recv_counts[irank] > 0) {
-//             for (int i = 0; i < recv_counts[irank]; ++i) {
-//                 std::array<double, 2> lonlat_coord = {
-//                     recv_buffers[irank][i * point_data_size + 0],
-//                     recv_buffers[irank][i * point_data_size + 1]
-//                 };
-//                 final_points.lonlat_coordinates.push_back(lonlat_coord);
-
-//                 // Recompute Cartesian coordinates
-//                 std::array<double, 3> cart_coord = {lonlat_coord[0], lonlat_coord[1], 0.0};
-//                 RLLtoXYZ_Deg(cart_coord);
-//                 final_points.coordinates.push_back(cart_coord);
-
-//                 for (size_t j = 0; j < num_scalars; ++j) {
-//                     const auto& var_name = m_config.scalar_var_names[j];
-//                     final_points.scalar_variables[var_name].push_back(recv_buffers[irank][i * point_data_size + 2 + j]);
-//                 }
-//             }
-//         }
-//     }
-
-//     std::cout << "Rank " << m_pcomm->rank() << " redistribution complete: "
-//               << final_points.size() << " final points" << std::endl;
-
-//     return MB_SUCCESS;
-// }
-
-// Missing method implementations
-
 moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
     if (m_pcomm->rank() == 0) {
         std::cout << "Starting point cloud reading..." << std::endl;
@@ -1430,16 +709,6 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
     MB_CHK_ERR(initialize_netcdf());
 
     return read_and_redistribute_distributed(points);
-
-    // if (m_is_usgs_format) {
-    //     // Use specialized USGS reader with spatial filtering
-    //     return read_usgs_format(points);
-    // } else
-    // if (m_config.use_root_based_distribution) {
-    //     return read_and_distribute_root_based(points);
-    // } else {
-    //     return read_and_redistribute_distributed(points);
-    // }
 }
 
 void moab::ParallelPointCloudReader::cleanup_netcdf() {

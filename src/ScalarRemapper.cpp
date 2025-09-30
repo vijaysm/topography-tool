@@ -576,90 +576,6 @@ std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateTy
     }
 }
 
-// Inverse Distance Remapper Implementation
-InverseDistanceRemapper::InverseDistanceRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
-    : ScalarRemapper(interface, pcomm, mesh_set) {
-}
-
-ErrorCode InverseDistanceRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
-    if (point_data.size() == 0) {
-        if (m_pcomm->rank() == 0) {
-            std::cout << "No point cloud data available for remapping" << std::endl;
-        }
-        return MB_SUCCESS;
-    }
-
-    // For each mesh element centroid, find weighted neighbors
-    for (size_t elem_idx = 0; elem_idx < m_mesh_data.centroids.size(); ++elem_idx) {
-        const auto& centroid = m_mesh_data.centroids[elem_idx];
-
-        std::vector<WeightedPoint> weighted_neighbors = find_weighted_neighbors(centroid, point_data);
-
-        if (!weighted_neighbors.empty()) {
-            // Interpolate scalar values using inverse distance weights
-            for (const auto& var_name : m_config.scalar_var_names) {
-                auto var_it = point_data.d_scalar_variables.find(var_name);
-                if (var_it != point_data.d_scalar_variables.end()) {
-                    ParallelPointCloudReader::CoordinateType weighted_sum = 0.0;
-                    ParallelPointCloudReader::CoordinateType total_weight = 0.0;
-
-                    for (const auto& wp : weighted_neighbors) {
-                        if (wp.index < static_cast<int>(var_it->second.size())) {
-                            weighted_sum += var_it->second[wp.index] * wp.weight;
-                            total_weight += wp.weight;
-                        }
-                    }
-
-                    if (total_weight > 0.0) {
-                        m_mesh_data.d_scalar_fields[var_name][elem_idx] = weighted_sum / total_weight;
-                    }
-                }
-            }
-        }
-    }
-
-    return MB_SUCCESS;
-}
-
-std::vector<InverseDistanceRemapper::WeightedPoint>
-InverseDistanceRemapper::find_weighted_neighbors(const ParallelPointCloudReader::PointType3D& target_point,
-                                                const ParallelPointCloudReader::PointData& point_data) {
-    std::vector<WeightedPoint> weighted_points;
-    constexpr double search_radius = 0.0;
-
-    // Linear search through all points
-    for (size_t i = 0; i < point_data.size(); ++i) {
-        auto coord = point_data.get_lonlat(i);
-        ParallelPointCloudReader::CoordinateType distance = compute_distance(target_point, coord);
-
-        // Check search radius constraint
-        if (search_radius > 0.0 && distance > search_radius) {
-            continue;
-        }
-
-        ParallelPointCloudReader::CoordinateType weight = compute_inverse_distance_weight(distance);
-        weighted_points.push_back({static_cast<int>(i), weight});
-    }
-
-    // Sort by weight (descending) and keep only max_neighbors
-    std::sort(weighted_points.begin(), weighted_points.end(),
-              [](const WeightedPoint& a, const WeightedPoint& b) {
-                  return a.weight > b.weight;
-              });
-
-    if (weighted_points.size() > static_cast<size_t>(m_config.max_neighbors)) {
-        weighted_points.resize(m_config.max_neighbors);
-    }
-
-    return weighted_points;
-}
-
-ParallelPointCloudReader::CoordinateType InverseDistanceRemapper::compute_inverse_distance_weight(ParallelPointCloudReader::CoordinateType distance, ParallelPointCloudReader::CoordinateType power) {
-    if (distance < 1e-12) {
-        return 1e12; // Very large weight for coincident points
-    }
-    return 1.0 / std::pow(distance, power);
-}
 
 // Factory Implementation
 std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
@@ -673,19 +589,11 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
             return std::unique_ptr<ScalarRemapper>(new PCSpectralProjectionRemapper(interface, pcomm, mesh_set));
         case NEAREST_NEIGHBOR:
             return std::unique_ptr<ScalarRemapper>(new NearestNeighborRemapper(interface, pcomm, mesh_set));
-        case INVERSE_DISTANCE:
-            return std::unique_ptr<ScalarRemapper>(new InverseDistanceRemapper(interface, pcomm, mesh_set));
-        case BILINEAR:
-        case CUBIC_SPLINE:
-            // TODO: Implement additional methods
-            std::cerr << "Remapping method not yet implemented" << std::endl;
-            return std::unique_ptr<ScalarRemapper>();
         default:
             std::cerr << "Unknown remapping method" << std::endl;
             return std::unique_ptr<ScalarRemapper>();
     }
 }
-
 
 
 static moab::ErrorCode Remapper_ApplyLocalMap(

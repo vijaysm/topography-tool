@@ -163,32 +163,6 @@ private:
 };
 
 /**
- * @brief Inverse distance weighted remapping implementation
- *
- * Maps each mesh element centroid using inverse distance weighted interpolation
- * from multiple nearby point cloud points. More accurate but computationally expensive.
- */
-class InverseDistanceRemapper : public ScalarRemapper {
-public:
-    InverseDistanceRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
-
-protected:
-    ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
-
-private:
-    struct WeightedPoint {
-        int index;
-        double weight;
-    };
-
-    std::vector<WeightedPoint> find_weighted_neighbors(
-        const ParallelPointCloudReader::PointType3D& target_point,
-        const ParallelPointCloudReader::PointData& point_data);
-
-    ParallelPointCloudReader::CoordinateType compute_inverse_distance_weight(ParallelPointCloudReader::CoordinateType distance, ParallelPointCloudReader::CoordinateType power = 2.0);
-};
-
-/**
  * @brief Point cloud to spectral element projection remapper
  *
  * Implements the LinearRemapFVtoGLL_Averaged algorithm for projecting point cloud data
@@ -217,10 +191,7 @@ class RemapperFactory {
 public:
     enum RemapMethod {
         PC_AVERAGED_SPECTRAL_PROJECTION,  // Default: Point cloud to spectral element projection
-        NEAREST_NEIGHBOR,
-        INVERSE_DISTANCE,
-        BILINEAR,
-        CUBIC_SPLINE
+        NEAREST_NEIGHBOR
     };
 
     static std::unique_ptr<ScalarRemapper> create_remapper(
