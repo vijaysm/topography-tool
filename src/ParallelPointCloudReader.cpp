@@ -110,26 +110,55 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         }
 
         // Check for USGS format: lat/lon dimensions and htopo variable
-        bool has_lat = false, has_lon = false, has_htopo = false;
+        bool has_lat = false, has_lon = false, has_htopo = false, has_fract = false;
         for (const auto& dim_pair : dims_map) {
-            if (!dim_pair.first.compare("lat")) has_lat = true;
-            else if (!dim_pair.first.compare("lon")) has_lon = true;
+            if (!dim_pair.first.compare("lat") || !dim_pair.first.compare("latitude"))
+            {
+              has_lat = true;
+              lat_var_name = !dim_pair.first.compare("lat")  ? "lat" : "latitude";
+            }
+            else if (!dim_pair.first.compare("lon") || !dim_pair.first.compare("longitude"))
+            {
+              has_lon = true;
+              lon_var_name = !dim_pair.first.compare("lon")  ? "lon" : "longitude";
+            }
         }
-        if (m_vars.count("htopo")) has_htopo = true;
+        if (m_vars.count("htopo") || m_vars.count("Elevation")) {
+          has_htopo = true;
+          topo_var_name = m_vars.count("htopo") ? "htopo" : "Elevation";
+        }
+        if (m_vars.count("landfract") || m_vars.count("LandWater")) {
+          has_fract = true;
+          fract_var_name = m_vars.count("landfract") ? "landfract" : "LandWater";
+        }
 
-        std::string lon_var_name, lat_var_name;
         if (has_lat && has_lon && has_htopo) {
-            if (m_pcomm->rank() == 0) std::cout << "Detected USGS format NetCDF file" << std::endl;
             m_is_usgs_format = true;
-            m_config.coord_var_names = {"lon", "lat"};
-            m_config.scalar_var_names = {"htopo", "landfract"};
-            lon_var_name = "lon";
-            lat_var_name = "lat";
-            PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim("lat");
-            PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim("lon");
+            
+            // Get dimension sizes
+            PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim(lat_var_name);
+            PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim(lon_var_name);
             nlats = lat_dim.getSize();
             nlons = lon_dim.getSize();
             m_total_points = nlats * nlons;
+            
+            // Set up configuration
+            m_config.coord_var_names = {lon_var_name, lat_var_name};
+            if (has_fract) {
+                m_config.scalar_var_names = {topo_var_name, fract_var_name};
+            } else {
+                m_config.scalar_var_names = {topo_var_name};
+            }
+            
+            if (m_pcomm->rank() == 0) {
+                std::cout << "Detected USGS format NetCDF file" << std::endl;
+                std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), " 
+                          << lon_var_name << " (" << nlons << ")" << std::endl;
+                std::cout << "  Topography variable: " << topo_var_name << std::endl;
+                if (has_fract) {
+                    std::cout << "  Land fraction variable: " << fract_var_name << std::endl;
+                }
+            }
         } else {
             if (m_pcomm->rank() == 0) std::cout << "Not USGS format, detecting coordinate variables..." << std::endl;
 
@@ -524,13 +553,13 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
         if (x_ndims == 1 && y_ndims == 1) {
             // 1D coordinate arrays - could be USGS format or standard point arrays
             // Check if this is USGS format by examining coordinate variable names
-            if (m_config.coord_var_names[0] == "lon" && m_config.coord_var_names[1] == "lat") {
+            if (m_is_usgs_format) {
                 // USGS format: lon and lat are separate 1D arrays defining a grid
                 // Need to convert linear index to 2D grid indices
 
                 // Get dimension sizes
-                PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim("lat");
-                PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim("lon");
+                PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim(lat_var_name);
+                PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim(lon_var_name);
                 assert( nlats - lat_dim.getSize() == 0);
                 assert( nlons - lon_dim.getSize() == 0);
 
@@ -1138,8 +1167,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
         // For USGS format, read and store 1D lat/lon arrays efficiently
         if (m_is_usgs_format) {
             // Read the actual 1D coordinate arrays for this rank's chunk
-            PnetCDF::NcmpiVar lon_var = m_vars.at("lon");
-            PnetCDF::NcmpiVar lat_var = m_vars.at("lat");
+            PnetCDF::NcmpiVar lon_var = m_vars.at(lon_var_name);
+            PnetCDF::NcmpiVar lat_var = m_vars.at(lat_var_name);
 
             chunk_data.latitudes.resize(nlats_count);
             chunk_data.longitudes.resize(nlons_count);

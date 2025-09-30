@@ -28,7 +28,7 @@ namespace moab {
 class ParallelPointCloudReader {
 public:
     // Type definitions for easier use - made configurable via typedefs
-    typedef float CoordinateType;
+    typedef double CoordinateType;
     static constexpr int DIM = 2;
     static constexpr CoordinateType ReferenceTolerance = 1e-12;
     using PointType3D = std::array<CoordinateType, 3>;
@@ -199,6 +199,7 @@ private:
     size_t nlats, nlons;
     MPI_Offset nlats_start, nlons_start;
     MPI_Offset nlats_count, nlons_count;
+    std::string lon_var_name, lat_var_name, topo_var_name, fract_var_name;
 
     // For tracking unique points to avoid duplicates
     std::unordered_set<PointType, PointHash> m_unique_points;

@@ -68,7 +68,6 @@ class ScalarRemapper {
 public:
     struct RemapConfig {
         std::vector<std::string> scalar_var_names;  // Variables to remap
-        // ParallelPointCloudReader::CoordinateType search_radius = 0.0;                 // Search radius (0 = unlimited)
         int max_neighbors = 1;                      // Maximum neighbors to consider
         bool use_element_centroids = true;          // Use element centroids vs vertices
         bool normalize_weights = true;              // Normalize interpolation weights

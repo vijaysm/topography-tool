@@ -33,7 +33,6 @@ static ParallelPointCloudReader::CoordinateType compute_distance(const ParallelP
     return compute_distance(p1, p2_3d);
 }
 
-
 ScalarRemapper::ScalarRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
     : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set), m_kdtree_built(false), m_grid_locator_built(false) {
 }
@@ -60,7 +59,7 @@ ErrorCode ScalarRemapper::configure(const RemapConfig& config) {
 ErrorCode ScalarRemapper::remap_scalars(const ParallelPointCloudReader::PointData& point_data) {
 
     if (m_pcomm->rank() == 0) {
-        std::cout << "Starting scalar remapping with " << point_data.lonlat_coordinates.size()
+        std::cout << "Starting scalar remapping with " << point_data.size()
                   << " point cloud points" << std::endl;
     }
 
@@ -122,10 +121,6 @@ ErrorCode ScalarRemapper::extract_mesh_centroids() {
 
     if (m_pcomm->rank() == 0) {
         std::cout << "Extracted " << m_mesh_data.elements.size() << " element centroids" << std::endl;
-        if (!m_mesh_data.centroids.empty()) {
-            std::cout << "First centroid: (" << m_mesh_data.centroids[0][0] << ", "
-                      << m_mesh_data.centroids[0][1] << ", " << m_mesh_data.centroids[0][2] << ")" << std::endl;
-        }
     }
 
     return MB_SUCCESS;
@@ -285,7 +280,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
         // For USGS format, use the 1D lat/lon arrays directly
         if (!point_data.latitudes.empty() && !point_data.longitudes.empty()) {
             if (m_pcomm->rank() == 0) {
-                std::cout << "Using stored 1D arrays: " << point_data.latitudes.size() 
+                std::cout << "Using stored 1D arrays: " << point_data.latitudes.size()
                           << " latitudes x " << point_data.longitudes.size() << " longitudes" << std::endl;
             }
 
@@ -365,7 +360,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
                 coords_for_kdtree[i] = point_data.get_lonlat(i);
             }
         }
-        
+
         // Create adapter for point cloud data
         const auto& coords = point_data.is_structured_grid ? coords_for_kdtree : point_data.lonlat_coordinates;
         m_adapter = std::unique_ptr<PointCloudAdapter>(new PointCloudAdapter(coords));
