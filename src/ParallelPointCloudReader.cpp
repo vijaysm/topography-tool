@@ -1,17 +1,18 @@
+
+#include <mpi.h>
 #include "ParallelPointCloudReader.hpp"
-#include "ParallelPointCloudDistributor.hpp"
 #include <iostream>
 #include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <unistd.h>
 #include <limits>
-// #include <pnetcdf>
+#include <cassert>
 
 namespace moab {
 
-ParallelPointCloudReader::ParallelPointCloudReader(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set)
-    : m_interface(interface), m_pcomm(pcomm), m_mesh_set(mesh_set), m_ncfile(nullptr), m_total_points(0), m_is_usgs_format(false) {
+ParallelPointCloudReader::ParallelPointCloudReader(Interface* interface, EntityHandle mesh_set)
+    : m_interface(interface), m_mesh_set(mesh_set), m_ncfile(nullptr), m_total_points(0), m_is_usgs_format(false) {
 }
 
 ParallelPointCloudReader::~ParallelPointCloudReader() {
@@ -23,53 +24,24 @@ ErrorCode ParallelPointCloudReader::configure(const ReadConfig& config) {
     m_config = config;
 
     // Compute bounding boxes for mesh decomposition
-    // ErrorCode rval = compute_mesh_bounding_boxes();
-    // if (rval != MB_SUCCESS) {
-    //     if (m_pcomm->rank() == 0) {
-    //         std::cerr << "Error: Failed to compute mesh bounding boxes" << std::endl;
-    //     }
-    //     return rval;
-    // }
-    // For USGS format, compute bounding box directly in lat/lon space from mesh vertices
-    BoundingBox lonlat_bbox;
+    // Since we have lat/lon coordinates, compute bounding box directly in lat/lon space from mesh vertices
     MB_CHK_SET_ERR(compute_lonlat_bounding_box_from_mesh(this->m_local_bbox), "Failed to compute local lon/lat bounding box");
-
-    MB_CHK_SET_ERR(gather_all_bounding_boxes(m_all_bboxes), "Failed to gather all the bounding boxes");
 
     return MB_SUCCESS;
 }
 
 ErrorCode ParallelPointCloudReader::initialize_netcdf() {
     try {
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Initializing NetCDF file: " << m_config.netcdf_filename << std::endl;
-        }
-
         m_ncfile = nullptr;
 
-#ifdef MOAB_HAVE_PNETCDF
-        // if (m_config.use_collective_io)
-        {
-            try {
-                m_ncfile = new PnetCDF::NcmpiFile(m_pcomm->comm(), m_config.netcdf_filename.c_str(), PnetCDF::NcmpiFile::read, PnetCDF::NcmpiFile::classic2);
-                if (m_pcomm->rank() == 0) {
-                    std::cout << "Successfully opened file with PnetCDF." << std::endl;
-                }
-            } catch (const PnetCDF::exceptions::NcmpiException& e) {
-                if (m_ncfile) delete m_ncfile;
-                m_ncfile = nullptr;
-                if (m_pcomm->rank() == 0) {
-                    std::cerr << "Error: PnetCDF opening failed: " << e.what() << ". This may indicate the file is not a PnetCDF file or a file system issue." << std::endl;
-                }
-                return MB_FAILURE;
-            }
+        try {
+            m_ncfile = new PnetCDF::NcmpiFile(MPI_COMM_WORLD, m_config.netcdf_filename, PnetCDF::NcmpiFile::read);
         }
-#else
-        if (m_pcomm->rank() == 0) {
-            std::cerr << "Error: MOAB_HAVE_PNETCDF is not defined. This reader requires PnetCDF for parallel I/O." << std::endl;
+        catch (PnetCDF::exceptions::NcInvalidArg& e) {
+            std::cerr << "Error: Could not open NetCDF file with PnetCDF (invalid argument): "
+                      << m_config.netcdf_filename << std::endl;
+            return MB_FAILURE;
         }
-        return MB_FAILURE;
-#endif
 
         if (!m_ncfile) {
             std::cerr << "Error: Could not open NetCDF file: " << m_config.netcdf_filename << std::endl;
@@ -80,29 +52,23 @@ ErrorCode ParallelPointCloudReader::initialize_netcdf() {
         // Detect file format
         MB_CHK_ERR(detect_netcdf_format());
 
+        return moab::MB_SUCCESS;
+
     } catch (const std::exception& e) {
         std::cerr << "An exception occurred during NetCDF initialization: " << e.what() << std::endl;
         return MB_FAILURE;
     }
-
-    return MB_SUCCESS;
 }
-
 
 ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
     try {
-#ifdef MOAB_HAVE_PNETCDF
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Detecting NetCDF format..." << std::endl;
-        }
+        std::cout << "Detecting NetCDF format..." << std::endl;
 
-        // Get all dimensions and variables using the PnetCDF API
+        // Store all variables in a map
         const std::multimap<std::string, PnetCDF::NcmpiDim> dims_map = m_ncfile->getDims();
         const std::multimap<std::string, PnetCDF::NcmpiVar> vars_map = m_ncfile->getVars();
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "NetCDF file has " << dims_map.size() << " dimensions and " << vars_map.size() << " variables" << std::endl;
-        }
+        std::cout << "NetCDF file has " << dims_map.size() << " dimensions and " << vars_map.size() << " variables" << std::endl;
 
         // Store all variables for later access
         for (const auto& var_pair : vars_map) {
@@ -150,17 +116,15 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 m_config.scalar_var_names = {topo_var_name};
             }
 
-            if (m_pcomm->rank() == 0) {
-                std::cout << "Detected USGS format NetCDF file" << std::endl;
-                std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), "
-                          << lon_var_name << " (" << nlons << ")" << std::endl;
-                std::cout << "  Topography variable: " << topo_var_name << std::endl;
-                if (has_fract) {
-                    std::cout << "  Land fraction variable: " << fract_var_name << std::endl;
-                }
+            std::cout << "Detected USGS format NetCDF file" << std::endl;
+            std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), "
+                      << lon_var_name << " (" << nlons << ")" << std::endl;
+            std::cout << "  Topography variable: " << topo_var_name << std::endl;
+            if (has_fract) {
+                std::cout << "  Land fraction variable: " << fract_var_name << std::endl;
             }
         } else {
-            if (m_pcomm->rank() == 0) std::cout << "Not USGS format, detecting coordinate variables..." << std::endl;
+            std::cout << "Not USGS format, detecting coordinate variables..." << std::endl;
 
             std::vector<std::string> lon_names = {"xc", "lon", "longitude", "x"};
             std::vector<std::string> lat_names = {"yc", "lat", "latitude", "y"};
@@ -205,22 +169,9 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
             }
         }
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" << std::endl;
-        }
+        std::cout << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" << std::endl;
 
-        // if (m_pcomm->rank() == 0) {
-        //     std::cout << "Total points in dataset: " << m_total_points << std::endl;
-        //     for(const auto& var : m_config.scalar_var_names)
-        //     {
-        //         std::cout << "Found variable: " << var << std::endl;
-        //     }
-        // }
         return MB_SUCCESS;
-#else
-        std::cerr << "Error: MOAB was not built with PnetCDF support" << std::endl;
-        return MB_FAILURE;
-#endif
     } catch (const std::exception& e) {
         std::cerr << "Error in detect_netcdf_format(): " << e.what() << std::endl;
         return MB_FAILURE;
@@ -255,7 +206,7 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
         MB_CHK_ERR(XYZtoRLL_Deg(coordinates, lon, lat));
 
         // Initialize bounding box on first valid coordinate
-            // Update bounding box
+        // Update bounding box
         lonlat_bbox.min_coords[0] = std::min(lonlat_bbox.min_coords[0], lon);
         lonlat_bbox.max_coords[0] = std::max(lonlat_bbox.max_coords[0], lon);
         lonlat_bbox.min_coords[1] = std::min(lonlat_bbox.min_coords[1], lat);
@@ -267,10 +218,6 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
         MB_CHK_SET_ERR(MB_FAILURE, "No valid coordinates found in mesh");
     }
 
-    // Add buffer factor: only needed for parallel computation
-    if (m_pcomm->size() > 1)
-        lonlat_bbox.expand(m_config.buffer_factor);
-
     // Ensure longitude stays within [0, 180] bounds and latitude within [-90, 90]
     assert(lonlat_bbox.min_coords[0] >= 0.0);
     assert(lonlat_bbox.min_coords[1] >= -90.0);
@@ -280,7 +227,7 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
     assert(lonlat_bbox.max_coords[1] <= 90.0);
 
     {
-        std::cout << m_pcomm->rank() << ": Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
+        std::cout << "Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
                   << ", " << lonlat_bbox.max_coords[0] << "] lat[" << lonlat_bbox.min_coords[1]
                   << ", " << lonlat_bbox.max_coords[1] << "]" << std::endl;
     }
@@ -288,40 +235,10 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
     return MB_SUCCESS;
 }
 
-ErrorCode ParallelPointCloudReader::gather_all_bounding_boxes(std::vector<BoundingBox>& all_bboxes) {
-    size_t size = m_pcomm->size();
-
-    // Prepare local bounding box data for communication
-    std::vector<double> local_bbox_data(DIM * 2);
-    std::copy(m_local_bbox.min_coords.begin(), m_local_bbox.min_coords.end(), local_bbox_data.begin());
-    std::copy(m_local_bbox.max_coords.begin(), m_local_bbox.max_coords.end(), local_bbox_data.begin() + DIM);
-
-    // Gather all bounding boxes
-    std::vector<double> all_bbox_data(size * DIM * 2);
-    MPI_Allgather(local_bbox_data.data(), DIM * 2, MPI_DOUBLE, all_bbox_data.data(), DIM * 2, MPI_DOUBLE, m_pcomm->comm());
-
-    // Store all bounding boxes
-    all_bboxes.resize(size);
-    for (size_t i = 0; i < size; ++i) {
-        // Each rank's data: [min_coords, max_coords] = [DIM values, DIM values]
-        size_t base_idx = i * DIM * 2;
-        std::copy(all_bbox_data.begin() + base_idx,
-                  all_bbox_data.begin() + base_idx + DIM,
-                  all_bboxes[i].min_coords.begin());
-        std::copy(all_bbox_data.begin() + base_idx + DIM,
-                  all_bbox_data.begin() + base_idx + DIM * 2,
-                  all_bboxes[i].max_coords.begin());
-    }
-
-    // Also store in member variable for backward compatibility
-    m_all_bboxes = all_bboxes;
-
-    return MB_SUCCESS;
-}
 
 ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, size_t count,
                                    std::vector<ParallelPointCloudReader::PointType>& coords) {
-#ifdef MOAB_HAVE_PNETCDF
+
     if (m_config.coord_var_names.size() < 2) return MB_FAILURE;
 
     try {
@@ -332,11 +249,9 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
         int x_ndims = x_var.getDimCount();
         int y_ndims = y_var.getDimCount();
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Coordinate variables: " << m_config.coord_var_names[0]
-                      << " (dims=" << x_ndims << "), " << m_config.coord_var_names[1]
-                      << " (dims=" << y_ndims << ")" << std::endl;
-        }
+        std::cout << "Coordinate variables: " << m_config.coord_var_names[0]
+                  << " (dims=" << x_ndims << "), " << m_config.coord_var_names[1]
+                  << " (dims=" << y_ndims << ")" << std::endl;
 
         std::vector<MPI_Offset> start, read_count;
 
@@ -353,17 +268,15 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                 assert( nlats - lat_dim.getSize() == 0);
                 assert( nlons - lon_dim.getSize() == 0);
 
-                if (m_pcomm->rank() == 0) {
-                    std::cout << "USGS coordinate grid: " << nlats << " lat x " << nlons << " lon" << std::endl;
-                }
+                std::cout << "USGS coordinate grid: " << nlats << " lat x " << nlons << " lon" << std::endl;
 
                 // Read entire coordinate arrays (they are 1D and relatively small)
                 std::vector<CoordinateType> lats(nlats), lons(nlons);
 
-                std::vector<MPI_Offset> lat_start = {nlats_start};
-                std::vector<MPI_Offset> lat_count = {nlats_count};
-                std::vector<MPI_Offset> lon_start = {nlons_start};
-                std::vector<MPI_Offset> lon_count = {nlons_count};
+                std::vector<MPI_Offset> lat_start = {static_cast<MPI_Offset>(nlats_start)};
+                std::vector<MPI_Offset> lat_count = {static_cast<MPI_Offset>(nlats_count)};
+                std::vector<MPI_Offset> lon_start = {static_cast<MPI_Offset>(nlons_start)};
+                std::vector<MPI_Offset> lon_count = {static_cast<MPI_Offset>(nlons_count)};
 
                 y_var.getVar_all(lat_start, lat_count, lats.data());  // lat
                 x_var.getVar_all(lon_start, lon_count, lons.data());  // lon
@@ -413,9 +326,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
             size_t dim0_size = x_dims[0].getSize();
             size_t dim1_size = x_dims[1].getSize();
 
-            if (m_pcomm->rank() == 0) {
-                std::cout << "2D coordinate arrays: " << dim0_size << " x " << dim1_size << std::endl;
-            }
+            std::cout << "2D coordinate arrays: " << dim0_size << " x " << dim1_size << std::endl;
 
             // Read entire coordinate arrays for now (simpler approach)
             start = {0, 0};
@@ -436,10 +347,8 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
 
             return MB_SUCCESS;
         } else {
-            if (m_pcomm->rank() == 0) {
-                std::cerr << "Unsupported coordinate variable dimensions: "
-                          << x_ndims << ", " << y_ndims << std::endl;
-            }
+            std::cerr << "Unsupported coordinate variable dimensions: "
+                      << x_ndims << ", " << y_ndims << std::endl;
             return MB_FAILURE;
         }
 
@@ -454,20 +363,15 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
         return MB_SUCCESS;
 
     } catch (const std::exception& e) {
-        if (m_pcomm->rank() == 0) {
-            std::cerr << "Error reading coordinates: " << e.what() << std::endl;
-        }
+        std::cerr << "Error reading coordinates: " << e.what() << std::endl;
         return MB_FAILURE;
     }
-#else
-    return MB_FAILURE;
-#endif
 }
 
 template<typename T>
 ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string& var_name, size_t start_idx,
                                        size_t count, std::vector<T>& data) {
-#ifdef MOAB_HAVE_PNETCDF
+
     auto var_it = m_vars.find(var_name);
     if (var_it == m_vars.end()) return MB_FAILURE;
 
@@ -475,9 +379,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
         PnetCDF::NcmpiVar var = var_it->second;
         int ndims = var.getDimCount();
 
-        if (m_pcomm->rank() == 0) {
-            std::cout << "Reading scalar variable '" << var_name << "' with " << ndims << " dimensions" << std::endl;
-        }
+        std::cout << "Reading scalar variable '" << var_name << "' with " << ndims << " dimensions" << std::endl;
 
         std::vector<MPI_Offset> start, read_count;
 
@@ -507,23 +409,19 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                 temp_buffer.reserve(total_elements_to_read);
 
                 if (total_elements_to_read > MAX_ELEMENTS_PER_CHUNK) {
-                    if (m_pcomm->rank() == 0) {
-                        std::cout << "Reading variable '" << var_name << "' in chunks to avoid overflow." << std::endl;
-                    }
+                    std::cout << "Reading variable '" << var_name << "' in chunks to avoid overflow." << std::endl;
 
                     size_t lat_chunk_size = MAX_ELEMENTS_PER_CHUNK / nlons_count;
                     if (lat_chunk_size == 0) lat_chunk_size = 1; // Ensure progress
 
-                    for (MPI_Offset lat_offset = 0; lat_offset < nlats_count; lat_offset += lat_chunk_size) {
-                        MPI_Offset current_lat_count = std::min(static_cast<MPI_Offset>(lat_chunk_size), nlats_count - lat_offset);
+                    for (size_t lat_offset = 0; lat_offset < nlats_count; lat_offset += lat_chunk_size) {
+                        size_t current_lat_count = std::min(lat_chunk_size, nlats_count - lat_offset);
                         size_t chunk_elements = current_lat_count * nlons_count;
-                        if (m_pcomm->rank() == 0) {
-                            std::cout << "\tReading latitude chunk from " << nlats_start + lat_offset << " to " << nlats_start + lat_offset + current_lat_count << "." << std::endl;
-                        }
+                        std::cout << "\tReading latitude chunk from " << nlats_start + lat_offset << " to " << nlats_start + lat_offset + current_lat_count << "." << std::endl;
 
                         std::vector<T> chunk_buffer(chunk_elements);
-                        start = {nlats_start + lat_offset, nlons_start};
-                        read_count = {current_lat_count, nlons_count};
+                        start = {static_cast<MPI_Offset>(nlats_start + lat_offset), static_cast<MPI_Offset>(nlons_start)};
+                        read_count = {static_cast<MPI_Offset>(current_lat_count), static_cast<MPI_Offset>(nlons_count)};
 
                         var.getVar_all(start, read_count, chunk_buffer.data());
                         temp_buffer.insert(temp_buffer.end(), chunk_buffer.begin(), chunk_buffer.end());
@@ -531,8 +429,8 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                 } else {
                     // Read all at once
                     temp_buffer.resize(total_elements_to_read);
-                    start = {nlats_start, nlons_start};
-                    read_count = {nlats_count, nlons_count};
+                    start = {static_cast<MPI_Offset>(nlats_start), static_cast<MPI_Offset>(nlons_start)};
+                    read_count = {static_cast<MPI_Offset>(nlats_count), static_cast<MPI_Offset>(nlons_count)};
                     var.getVar_all(start, read_count, temp_buffer.data());
                 }
 
@@ -557,34 +455,23 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 
         } else if (ndims == 3) {
             // 3D variable - skip for now (likely vertex coordinates or time-dependent data)
-            if (m_pcomm->rank() == 0) {
-                std::cout << "WARNING:Skipping 3D variable '" << var_name << "' (not supported for scalar data)" << std::endl;
-            }
+            std::cout << "WARNING:Skipping 3D variable '" << var_name << "' (not supported for scalar data)" << std::endl;
             return MB_SUCCESS;
         } else {
-            if (m_pcomm->rank() == 0) {
-                std::cerr << "Unsupported variable dimensions: " << ndims << " for variable " << var_name << std::endl;
-            }
+            std::cerr << "Unsupported variable dimensions: " << ndims << " for variable " << var_name << std::endl;
             return MB_FAILURE;
         }
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        if (m_pcomm->rank() == 0) {
-            std::cerr << "Error reading scalar variable '" << var_name << "': " << e.what() << std::endl;
-        }
+        std::cerr << "Error reading scalar variable '" << var_name << "': " << e.what() << std::endl;
         return MB_FAILURE;
     }
-#else
-    return MB_FAILURE;
-#endif
 }
 
 
-moab::ErrorCode moab::ParallelPointCloudReader::read_and_redistribute_distributed(PointData& local_points) {
-    if (m_pcomm->rank() == 0) {
-        std::cout << "=== Starting distributed reading and redistribution ===" << std::endl;
-    }
+moab::ErrorCode moab::ParallelPointCloudReader::read_all_data(PointData& local_points) {
+    std::cout << "=== Starting data reading ===" << std::endl;
 
     nlats_start = 0;
     nlats_count = nlats;
@@ -596,10 +483,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_and_redistribute_distribute
     const size_t my_count = nlons_count * nlats_count;
     const size_t my_start_idx = 0;
 
-    if (m_pcomm->rank() == 0) {
-        std::cout << "Each rank reading ~" << points_per_rank << " points" << std::endl;
-        std::cout << "Total points: " << m_total_points << ", ranks: " << m_pcomm->size() << std::endl;
-    }
+    std::cout << "Reading ~" << points_per_rank << " points" << std::endl;
+    std::cout << "Total points: " << m_total_points << std::endl;
 
     // Step 2: Read my chunk of data
     MB_CHK_ERR(read_local_chunk_distributed(my_start_idx, my_count, local_points));
@@ -634,10 +519,10 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
             chunk_data.latitudes.resize(nlats_count);
             chunk_data.longitudes.resize(nlons_count);
 
-            std::vector<MPI_Offset> lat_start = {nlats_start};
-            std::vector<MPI_Offset> lat_count = {nlats_count};
-            std::vector<MPI_Offset> lon_start = {nlons_start};
-            std::vector<MPI_Offset> lon_count = {nlons_count};
+            std::vector<MPI_Offset> lat_start = {static_cast<MPI_Offset>(nlats_start)};
+            std::vector<MPI_Offset> lat_count = {static_cast<MPI_Offset>(nlats_count)};
+            std::vector<MPI_Offset> lon_start = {static_cast<MPI_Offset>(nlons_start)};
+            std::vector<MPI_Offset> lon_count = {static_cast<MPI_Offset>(nlons_count)};
 
             lat_var.getVar_all(lat_start, lat_count, chunk_data.latitudes.data());
             lon_var.getVar_all(lon_start, lon_count, chunk_data.longitudes.data());
@@ -645,11 +530,9 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
             // Mark as structured grid - coordinates will be computed on-the-fly
             chunk_data.is_structured_grid = true;
 
-            if (m_pcomm->rank() == 0) {
-                std::cout << "USGS format: Stored " << chunk_data.latitudes.size() << " latitudes and "
-                          << chunk_data.longitudes.size() << " longitudes (total grid points: "
-                          << chunk_data.size() << ", computed on-the-fly)" << std::endl;
-            }
+            std::cout << "USGS format: Stored " << chunk_data.latitudes.size() << " latitudes and "
+                      << chunk_data.longitudes.size() << " longitudes (total grid points: "
+                      << chunk_data.size() << ", computed on-the-fly)" << std::endl;
         } else {
             // Standard format: read coordinates directly into explicit storage
             MB_CHK_ERR(read_coordinates_chunk(start_idx, count, chunk_data.lonlat_coordinates));
@@ -690,7 +573,7 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
             }
         }
 
-        std::cout << "Rank " << m_pcomm->rank() << " read " << chunk_data.size()
+        std::cout << "Read " << chunk_data.size()
                   << " points with " << chunk_data.d_scalar_variables.size() << " scalar variables" << std::endl;
 
         return MB_SUCCESS;
@@ -701,14 +584,15 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
 }
 
 moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
-    if (m_pcomm->rank() == 0) {
-        std::cout << "Starting point cloud reading..." << std::endl;
-    }
+    std::cout << "Starting point cloud reading..." << std::endl;
 
     // Initialize NetCDF file
     MB_CHK_ERR(initialize_netcdf());
 
-    return read_and_redistribute_distributed(points);
+    // Call the data reading
+    MB_CHK_ERR(read_all_data(points));
+    
+    return MB_SUCCESS;
 }
 
 void moab::ParallelPointCloudReader::cleanup_netcdf() {

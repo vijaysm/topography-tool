@@ -2,13 +2,12 @@
 #define PARALLEL_POINT_CLOUD_READER_HPP
 
 #include "moab/Core.hpp"
-#include "moab/ParallelComm.hpp"
 #include "moab/Range.hpp"
 #include "moab/CartVect.hpp"
 #ifdef MOAB_HAVE_PNETCDF
 #include <pnetcdf>
 #else
-#error Need to build MOAB with Parallel-NetCDF for the example to work
+#error Need to build MOAB with Parallel-NetCDF for NetCDF I/O
 #endif
 #include <vector>
 #include <string>
@@ -20,10 +19,11 @@
 namespace moab {
 
 /**
- * @brief Efficient parallel NetCDF point cloud reader with MOAB mesh-based decomposition
+ * @brief Efficient NetCDF point cloud reader for MOAB meshes
  *
- * This class provides scalable reading of massive point cloud datasets from NetCDF files,
- * distributing points based on proximity to MOAB mesh elements with configurable buffer zones.
+ * This class provides reading of point cloud datasets from NetCDF files.
+ * Supports both structured grids (USGS format) and unstructured point clouds.
+ * NOTE: OpenMP parallelism can be exploited in data processing sections.
  */
 class ParallelPointCloudReader {
 public:
@@ -76,12 +76,12 @@ public:
     struct PointData {
         // For unstructured/irregular meshes: explicit coordinate storage
         std::vector<PointType> lonlat_coordinates;
-        
+
         // For structured grids (USGS format): 1D lat/lon arrays
         std::vector<CoordinateType> longitudes;  // 1D longitude array
         std::vector<CoordinateType> latitudes;   // 1D latitude array
         bool is_structured_grid = false;         // Flag to indicate grid type
-        
+
         // Scalar data
         std::unordered_map<std::string, std::vector<double>> d_scalar_variables;
         std::unordered_map<std::string, std::vector<int>> i_scalar_variables;
@@ -91,11 +91,11 @@ public:
          * For structured grids: nlat * nlon
          * For unstructured: lonlat_coordinates.size()
          */
-        size_t size() const { 
+        size_t size() const {
             if (is_structured_grid && !latitudes.empty() && !longitudes.empty()) {
                 return latitudes.size() * longitudes.size();
             }
-            return lonlat_coordinates.size(); 
+            return lonlat_coordinates.size();
         }
 
         /**
@@ -103,29 +103,29 @@ public:
          * For structured grids: computes from 1D arrays (lon moves fastest)
          * For unstructured: reads from explicit storage
          */
-        CoordinateType longitude(size_t global_idx) const { 
+        CoordinateType longitude(size_t global_idx) const {
             if (is_structured_grid && !longitudes.empty()) {
                 size_t nlon = longitudes.size();
                 size_t ilon = global_idx % nlon;
                 return longitudes[ilon];
             }
-            return lonlat_coordinates[global_idx][0]; 
+            return lonlat_coordinates[global_idx][0];
         }
-        
+
         /**
          * @brief Get latitude at global index
          * For structured grids: computes from 1D arrays (lon moves fastest)
          * For unstructured: reads from explicit storage
          */
-        CoordinateType latitude(size_t global_idx) const { 
+        CoordinateType latitude(size_t global_idx) const {
             if (is_structured_grid && !latitudes.empty()) {
                 size_t nlon = longitudes.size();
                 size_t ilat = global_idx / nlon;
                 return latitudes[ilat];
             }
-            return lonlat_coordinates[global_idx][1]; 
+            return lonlat_coordinates[global_idx][1];
         }
-        
+
         /**
          * @brief Get lon/lat coordinate pair at global index
          * Convenience method that returns both coordinates
@@ -133,7 +133,7 @@ public:
         PointType get_lonlat(size_t global_idx) const {
             return {longitude(global_idx), latitude(global_idx)};
         }
-        
+
         /**
          * @brief Get grid dimensions (only for structured grids)
          */
@@ -167,19 +167,15 @@ public:
         std::string netcdf_filename;
         std::vector<std::string> coord_var_names = {"x", "y"};
         std::vector<std::string> scalar_var_names;
-        float buffer_factor = 0.05; // 5% buffer around bounding box
-        bool use_collective_io = true;
         bool convert_lonlat_to_xyz = false;  // Convert geographic to Cartesian coordinates
         double sphere_radius = 1.0;  // Radius for coordinate conversion
         bool auto_detect_format = true;  // Automatically detect USGS vs other formats
-        bool use_distributed_reading = false;  // Use distributed reading with MPI redistribution
-        bool print_statistics = false; // Print details statistics about the reading and communication workflows
+        bool print_statistics = false; // Print detailed statistics
         bool verbose = false; // Print verbose output
     };
 
 private:
     Interface* m_interface;
-    ParallelComm* m_pcomm;
     EntityHandle m_mesh_set;
     ReadConfig m_config;
 
@@ -191,14 +187,13 @@ private:
 
     // Spatial decomposition
     BoundingBox m_local_bbox;
-    std::vector<BoundingBox> m_all_bboxes;
 
     // Point cloud data
     size_t m_total_points;
     bool m_is_usgs_format;
     size_t nlats, nlons;
-    MPI_Offset nlats_start, nlons_start;
-    MPI_Offset nlats_count, nlons_count;
+    size_t nlats_start, nlons_start;
+    size_t nlats_count, nlons_count;
     std::string lon_var_name, lat_var_name, topo_var_name, fract_var_name;
 
     // For tracking unique points to avoid duplicates
@@ -224,21 +219,19 @@ private:
     // };
 
 public:
-    ParallelPointCloudReader(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
+    ParallelPointCloudReader(Interface* interface, EntityHandle mesh_set);
     ~ParallelPointCloudReader();
 
     // Configuration
     ErrorCode configure(const ReadConfig& config);
 
     // Main reading interface
-    ErrorCode read_points(PointData& local_points);
+    ErrorCode read_points(PointData& points);
     const ReadConfig& get_config() const { return m_config; }
 
     // Utility functions
     size_t get_point_count() const { return m_total_points; }
     ErrorCode get_variable_info(std::vector<std::string>& var_names, std::vector<size_t>& var_sizes);
-    ErrorCode gather_all_bounding_boxes(std::vector<BoundingBox>& all_bboxes);
-    const std::vector<BoundingBox>& get_all_bounding_boxes() const { return m_all_bboxes; };
     bool is_usgs_format() const { return m_is_usgs_format; }
 
 private:
@@ -256,22 +249,9 @@ private:
     ErrorCode read_scalar_variable_chunk(const std::string& var_name, size_t start_idx,
                                         size_t count, std::vector<T>& data);
 
-    // Root-based distribution methods
-    // ErrorCode read_and_distribute_root_based(PointData& local_points);
-    // ErrorCode gather_all_bounding_boxes_on_root();
-    // ErrorCode root_read_and_distribute_points(PointData& root_local_points);
-    ErrorCode determine_point_owners(const PointType& point, std::vector<int>& owner_ranks);
-    // ErrorCode send_buffered_data_to_ranks(std::vector<PointBuffer>& rank_buffers);
-    // ErrorCode receive_distributed_data(PointData& local_points);
-
-    // Distributed reading and redistribution methods
-    ErrorCode read_and_redistribute_distributed(PointData& local_points);
+    // Data reading methods
+    ErrorCode read_all_data(PointData& points);
     ErrorCode read_local_chunk_distributed(size_t start_idx, size_t count, PointData& chunk_data);
-    // ErrorCode redistribute_points_by_ownership(PointData& initial_points, PointData& final_points);
-
-    // Point distribution
-    // ErrorCode distribute_points_by_proximity(PointData& all_points, PointData& local_points);
-    std::vector<int> get_target_ranks(const PointType3D& point);
 
     // Memory management
     ErrorCode estimate_memory_requirements(size_t& estimated_memory);

@@ -3,7 +3,6 @@
 
 #include "ParallelPointCloudReader.hpp"
 #include "moab/Interface.hpp"
-#include "moab/ParallelComm.hpp"
 #include "moab/ErrorHandler.hpp"
 #include "nanoflann.hpp"
 #include "RegularGridLocator.hpp"
@@ -61,8 +60,7 @@ typedef nanoflann::KDTreeSingleIndexAdaptor<
  *
  * This class provides a general interface for different remapping methods (nearest neighbor,
  * inverse distance weighting, etc.) to map scalar data from NetCDF point clouds to H5M mesh
- * element centroids. All operations are designed to be parallel without MPI communication
- * after the initial point cloud distribution.
+ * element centroids. OpenMP parallelism is exploited for multicore performance.
  */
 class ScalarRemapper {
 public:
@@ -90,13 +88,12 @@ public:
 
 protected:
     Interface* m_interface;
-    ParallelComm* m_pcomm;
     EntityHandle m_mesh_set;
     RemapConfig m_config;
     MeshData m_mesh_data;
 
 public:
-    ScalarRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
+    ScalarRemapper(Interface* interface, EntityHandle mesh_set);
     virtual ~ScalarRemapper() = default;
 
     // Configuration
@@ -144,22 +141,11 @@ protected:
  */
 class NearestNeighborRemapper : public ScalarRemapper {
 public:
-    NearestNeighborRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
+    NearestNeighborRemapper(Interface* interface, EntityHandle mesh_set);
     ~NearestNeighborRemapper();
 
 protected:
     ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
-
-private:
-    // size_t find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
-    //                       const ParallelPointCloudReader::PointData& point_data);
-
-    // // KD-tree members for fast nearest neighbor queries
-    // std::unique_ptr<PointCloudAdapter> m_adapter;
-    // std::unique_ptr<KDTree> m_kdtree;
-    // bool m_kdtree_built;
-
-    // ErrorCode build_kdtree(const ParallelPointCloudReader::PointData& point_data);
 };
 
 /**
@@ -167,10 +153,11 @@ private:
  *
  * Implements the LinearRemapFVtoGLL_Averaged algorithm for projecting point cloud data
  * onto spectral element meshes using GLL quadrature points and KD-tree spatial searches.
+ * NOTE: OpenMP parallelization is already implemented in this class.
  */
 class PCSpectralProjectionRemapper : public ScalarRemapper {
 public:
-    PCSpectralProjectionRemapper(Interface* interface, ParallelComm* pcomm, EntityHandle mesh_set);
+    PCSpectralProjectionRemapper(Interface* interface, EntityHandle mesh_set);
 
 protected:
     ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
@@ -197,7 +184,6 @@ public:
     static std::unique_ptr<ScalarRemapper> create_remapper(
         RemapMethod method,
         Interface* interface,
-        ParallelComm* pcomm,
         EntityHandle mesh_set);
 };
 
