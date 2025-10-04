@@ -342,6 +342,32 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
         std::cout << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" << std::endl;
 
+        // Validate that all requested scalar variables exist
+        if (!m_config.scalar_var_names.empty()) {
+            std::vector<std::string> missing_vars;
+            for (const auto& var_name : m_config.scalar_var_names) {
+                if (m_vars.find(var_name) == m_vars.end()) {
+                    missing_vars.push_back(var_name);
+                }
+            }
+            
+            if (!missing_vars.empty()) {
+                std::cerr << "\nERROR: Requested variables not found in NetCDF file:" << std::endl;
+                for (const auto& var : missing_vars) {
+                    std::cerr << "  - '" << var << "'" << std::endl;
+                }
+                std::cerr << "\nAvailable data variables in file: ";
+                for (const auto& v : m_vars) {
+                    // Skip coordinate variables
+                    if (v.first != lon_var_name && v.first != lat_var_name) {
+                        std::cerr << v.first << " ";
+                    }
+                }
+                std::cerr << "\n" << std::endl;
+                return MB_FAILURE;
+            }
+        }
+
         return MB_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Error in detect_netcdf_format(): " << e.what() << std::endl;
@@ -544,7 +570,15 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                                        size_t count, std::vector<T>& data) {
 
     auto var_it = m_vars.find(var_name);
-    if (var_it == m_vars.end()) return MB_FAILURE;
+    if (var_it == m_vars.end()) {
+        std::cerr << "ERROR: Variable '" << var_name << "' not found in NetCDF file!" << std::endl;
+        std::cerr << "Available variables: ";
+        for (const auto& v : m_vars) {
+            std::cerr << v.first << " ";
+        }
+        std::cerr << std::endl;
+        return MB_FAILURE;
+    }
 
     try {
         PnetCDF::NcmpiVar var = var_it->second;
