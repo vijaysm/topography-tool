@@ -80,11 +80,16 @@ public:
         // For structured grids (USGS format): 1D lat/lon arrays
         std::vector<CoordinateType> longitudes;  // 1D longitude array
         std::vector<CoordinateType> latitudes;   // 1D latitude array
-        bool is_structured_grid = false;         // Flag to indicate grid type
 
         // Scalar data
         std::unordered_map<std::string, std::vector<double>> d_scalar_variables;
         std::unordered_map<std::string, std::vector<int>> i_scalar_variables;
+        
+        // Area data (stored separately for potential weighted remapping)
+        std::vector<double> areas;
+
+        // Structured grid flag
+        bool is_structured_grid = false;
 
         /**
          * @brief Get total number of points
@@ -167,6 +172,9 @@ public:
         std::string netcdf_filename;
         std::vector<std::string> coord_var_names = {"x", "y"};
         std::vector<std::string> scalar_var_names;
+        std::string area_var_name = "";  // Area variable to read and store
+        std::vector<std::string> square_field_names;  // Fields to compute squares for
+        bool bypass_format_detection = false;  // Skip format detection and use coord_var_names directly
         bool convert_lonlat_to_xyz = false;  // Convert geographic to Cartesian coordinates
         double sphere_radius = 1.0;  // Radius for coordinate conversion
         bool auto_detect_format = true;  // Automatically detect USGS vs other formats

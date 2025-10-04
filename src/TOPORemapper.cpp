@@ -1,15 +1,36 @@
 #include "ParallelPointCloudReader.hpp"
 #include "ScalarRemapper.hpp"
 #include "moab/Core.hpp"
+#include "moab/ProgOptions.hpp"
 #include <mpi.h>
 #include <iostream>
 #include <chrono>
 #include <iomanip>
+#include <sstream>
+#include <algorithm>
 
 using namespace moab;
 
+// Helper function to parse comma-separated strings
+std::vector<std::string> parse_comma_separated(const std::string& input) {
+    std::vector<std::string> result;
+    if (input.empty()) return result;
+    
+    std::stringstream ss(input);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        // Trim whitespace
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+        if (!item.empty()) {
+            result.push_back(item);
+        }
+    }
+    return result;
+}
+
 /**
- * @brief Example demonstrating efficient point cloud reading with MOAB mesh
+ * @brief TOPORemapper - Maps NetCDF point cloud data to mesh elements
  * NOTE: OpenMP parallelism is available - set OMP_NUM_THREADS environment variable
  */
 int main(int argc, char* argv[]) {
@@ -21,14 +42,82 @@ int main(int argc, char* argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     try {
+        // Parse command-line arguments using MOAB's ProgOptions
+        ProgOptions opts;
+        
+        // Required arguments
+        std::string source_file = "";
+        std::string target_file = "";
+        std::string output_file = "";
+        
+        // Optional variable name overrides
+        std::string lon_var = "";
+        std::string lat_var = "";
+        std::string area_var = "";
+        std::string fields_str = "";
+        std::string square_fields_str = "";
+        
+        // Remapping options
+        std::string remap_method = "PC_SPECTRAL";
+        int spectral_order = 4;
+        bool continuous_gll = true;
+        bool apply_bubble = true;
+        
+        opts.addOpt<std::string>("source,s", "Source NetCDF point cloud file", &source_file);
+        opts.addOpt<std::string>("target,t", "Target mesh file (H5M)", &target_file);
+        opts.addOpt<std::string>("output,o", "Output mesh file with remapped data", &output_file);
+        
+        opts.addOpt<std::string>("lon-var,", "Longitude variable name (bypasses format detection)", &lon_var);
+        opts.addOpt<std::string>("lat-var,", "Latitude variable name (bypasses format detection)", &lat_var);
+        opts.addOpt<std::string>("area-var,", "Area variable name to read and store", &area_var);
+        opts.addOpt<std::string>("fields,f", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
+        opts.addOpt<std::string>("square-fields,", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
+        
+        opts.addOpt<std::string>("remap-method,m", "Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)", &remap_method);
+        opts.addOpt<int>("spectral-order,p", "Spectral element order for PC_SPECTRAL method (default: 4)", &spectral_order);
+        opts.addOpt<void>("no-continuous-gll,", "Disable continuous GLL nodes", &continuous_gll);
+        opts.addOpt<void>("no-bubble-correction,", "Disable bubble correction", &apply_bubble);
+        
+        opts.parseCommandLine(argc, argv);
+        
+        // Validate required arguments
+        if (source_file.empty() || target_file.empty()) {
+            if (rank == 0) {
+                std::cerr << "Error: Source and target files are required.\n" << std::endl;
+                opts.printHelp();
+            }
+            MPI_Finalize();
+            return 1;
+        }
+        
+        if (rank == 0) {
+            std::cout << "\n=== TOPORemapper Configuration ===" << std::endl;
+            std::cout << "Source file: " << source_file << std::endl;
+            std::cout << "Target file: " << target_file << std::endl;
+            if (!output_file.empty()) {
+                std::cout << "Output file: " << output_file << std::endl;
+            }
+            if (!lon_var.empty() && !lat_var.empty()) {
+                std::cout << "Coordinate variable overrides: " << lon_var << ", " << lat_var << std::endl;
+            }
+            if (!area_var.empty()) {
+                std::cout << "Area variable: " << area_var << std::endl;
+            }
+            if (!fields_str.empty()) {
+                std::cout << "Field overrides: " << fields_str << std::endl;
+            }
+            if (!square_fields_str.empty()) {
+                std::cout << "Square fields: " << square_fields_str << std::endl;
+            }
+            std::cout << "Remap method: " << remap_method << std::endl;
+            std::cout << "====================================\n" << std::endl;
+        }
+        
         // Initialize MOAB
         Core moab_core;
         Interface* mb = &moab_core;
 
-        // Load mesh file
-        std::string mesh_filename = "/Users/mahadevan/Code/sigma/moab-pristine2/MeshFiles/unittest/quad_1000.h5m";
-        if (argc > 1) mesh_filename = argv[1];
-
+        // Load target mesh
         EntityHandle mesh_set;
         ErrorCode rval = mb->create_meshset(MESHSET_SET, mesh_set);
         if (MB_SUCCESS != rval) {
@@ -40,19 +129,40 @@ int main(int argc, char* argv[]) {
         // Load mesh with parallel options
         std::string read_opts = "DEBUG_IO=0";
         if( size > 1 )  // If reading in parallel, need to tell it how
-            read_opts += "PARALLEL=READ_PART;PARTITION=PARALLEL_PARTITION;PARALLEL_RESOLVE_SHARED_ENTS;DEBUG_PIO=0;";
-        MB_CHK_SET_ERR( mb->load_file(mesh_filename.c_str(), &mesh_set, read_opts.c_str()), "Failed to load mesh file");
+            read_opts += ";PARALLEL=READ_PART;PARTITION=PARALLEL_PARTITION;PARALLEL_RESOLVE_SHARED_ENTS;DEBUG_PIO=0";
+        MB_CHK_SET_ERR( mb->load_file(target_file.c_str(), &mesh_set, read_opts.c_str()), "Failed to load mesh file");
 
-        std::cout << "Loaded mesh file: " << mesh_filename << std::endl;
+        if (rank == 0) {
+            std::cout << "Loaded target mesh: " << target_file << std::endl;
+        }
 
         // Configure the reader
         ParallelPointCloudReader reader(mb, mesh_set);
         ParallelPointCloudReader::ReadConfig config;
-        std::string netcdf_filename = "pointcloud.nc";
-        if (argc > 2) netcdf_filename = argv[2];
-        config.netcdf_filename = netcdf_filename;
+        config.netcdf_filename = source_file;
         config.print_statistics = true;
         config.verbose = true;
+        
+        // Apply coordinate variable overrides (bypasses format detection)
+        if (!lon_var.empty() && !lat_var.empty()) {
+            config.coord_var_names = {lon_var, lat_var};
+            config.bypass_format_detection = true;
+        }
+        
+        // Apply field name overrides (replaces auto-detection)
+        if (!fields_str.empty()) {
+            config.scalar_var_names = parse_comma_separated(fields_str);
+        }
+        
+        // Store area variable name if specified
+        if (!area_var.empty()) {
+            config.area_var_name = area_var;
+        }
+        
+        // Store square fields list
+        if (!square_fields_str.empty()) {
+            config.square_field_names = parse_comma_separated(square_fields_str);
+        }
 
         reader.configure(config);
 
@@ -66,45 +176,42 @@ int main(int argc, char* argv[]) {
             auto read_time = std::chrono::high_resolution_clock::now();
             auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(read_time - start_time);
 
-            std::cout << "\n=== Point Cloud Reading Results ===" << std::endl;
-            std::cout << "Total points in dataset: " << reader.get_point_count() << std::endl;
-            std::cout << "Points read: " << local_points.size() << std::endl;
-            std::cout << "Reading time: " << read_duration.count() << " ms" << std::endl;
-        }
-
-        bool remap_data = false;
-        std::string remap_output_filename = "";
-        // let us check all other input options.
-        for (int iarg = 3; iarg < argc; ++iarg)
-        {
-            if (std::string(argv[iarg]) == "--remap") {
-                remap_data = true;
-                if (iarg + 1 < argc) {
-                    remap_output_filename = argv[iarg + 1];
-                    ++iarg; // skip the next one.
-                }
+            if (rank == 0) {
+                std::cout << "\n=== Point Cloud Reading Results ===" << std::endl;
+                std::cout << "Total points in dataset: " << reader.get_point_count() << std::endl;
+                std::cout << "Points read: " << local_points.size() << std::endl;
+                std::cout << "Reading time: " << read_duration.count() << " ms" << std::endl;
             }
         }
 
-        // Perform scalar remapping from point cloud to mesh elements
-        if (remap_data) {
-            std::cout << "\n=== Starting Scalar Remapping ===" << std::endl;
+        // Perform scalar remapping if output file specified
+        if (!output_file.empty()) {
+            if (rank == 0) {
+                std::cout << "\n=== Starting Scalar Remapping ===" << std::endl;
+            }
 
-            // Create remapper (PC averaged spectral projection by default)
-            auto remapper = RemapperFactory::create_remapper(
-                RemapperFactory::PC_AVERAGED_SPECTRAL_PROJECTION, mb, mesh_set);
+            // Determine remapping method
+            RemapperFactory::RemapMethod method = RemapperFactory::PC_AVERAGED_SPECTRAL_PROJECTION;
+            if (remap_method == "NEAREST_NEIGHBOR" || remap_method == "NN") {
+                method = RemapperFactory::NEAREST_NEIGHBOR;
+            }
+
+            auto remapper = RemapperFactory::create_remapper(method, mb, mesh_set);
 
             if (remapper) {
                 // Configure remapping
                 ScalarRemapper::RemapConfig remap_config;
-                // if domain file, use the following for testing.
-                // remap_config.scalar_var_names = {"mask", "area", "frac"};
-                // if using USGS-rawdata, then use the following
-                remap_config.scalar_var_names = reader.get_config().scalar_var_names; // {"htopo", "landfract"};
-                remap_config.max_neighbors = 1;    // Nearest neighbor only
-                remap_config.spectral_order = 4;   // Spectral element order
-                remap_config.continuous_gll = true; // Use continuous GLL nodes
-                remap_config.apply_bubble_correction = true;
+                remap_config.scalar_var_names = reader.get_config().scalar_var_names;
+                
+                // Add squared field names to the remapping list
+                for (const auto& field_name : reader.get_config().square_field_names) {
+                    remap_config.scalar_var_names.push_back(field_name + "_squared");
+                }
+                
+                remap_config.max_neighbors = 1;
+                remap_config.spectral_order = spectral_order;
+                remap_config.continuous_gll = continuous_gll;
+                remap_config.apply_bubble_correction = apply_bubble;
                 remap_config.use_element_centroids = true;
                 remap_config.is_usgs_format = reader.is_usgs_format();
 
@@ -114,24 +221,32 @@ int main(int argc, char* argv[]) {
                 MB_CHK_SET_ERR(remapper->remap_scalars(local_points), "Failed to perform scalar remapping");
 
                 // Write remapped data to MOAB tags
-                MB_CHK_SET_ERR(remapper->write_to_tags("remapped_"), "Failed to write remapped data to tags");
-                std::cout << "Successfully created remapped tags on mesh elements" << std::endl;
+                MB_CHK_SET_ERR(remapper->write_to_tags(""), "Failed to write remapped data to tags");
+                
+                if (rank == 0) {
+                    std::cout << "Successfully created remapped tags on mesh elements" << std::endl;
+                }
 
                 // Save mesh with remapped data
-                if (!remap_output_filename.empty()) {
-                    std::string write_opts = "PARALLEL=WRITE_PART";
-                    MB_CHK_SET_ERR(mb->write_file(remap_output_filename.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1), "Failed to write remapped mesh");
-                    std::cout << "Saved mesh with remapped data to: " << remap_output_filename << std::endl;
+                std::string write_opts = "";
+                if (size > 1) {
+                    write_opts = "PARALLEL=WRITE_PART";
+                }
+                MB_CHK_SET_ERR(mb->write_file(output_file.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1), 
+                               "Failed to write remapped mesh");
+                
+                if (rank == 0) {
+                    std::cout << "Saved mesh with remapped data to: " << output_file << std::endl;
                 }
             } else {
                 std::cerr << "Failed to create remapper" << std::endl;
+                MPI_Finalize();
+                return 1;
             }
         }
 
-        std::cout << "\nRemapper processing completed successfully!" << std::endl;
-        if (remap_output_filename.empty()) {
-            std::cout << "Usage: " << argv[0] << " <mesh.h5m> <pointcloud.nc> [--remap] [output_mesh.h5m]" << std::endl;
-            std::cout << "  --remap: Enable scalar remapping from point cloud to mesh" << std::endl;
+        if (rank == 0) {
+            std::cout << "\nTOPORemapper completed successfully!" << std::endl;
         }
 
     } catch (const std::exception& e) {

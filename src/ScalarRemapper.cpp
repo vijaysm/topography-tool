@@ -387,7 +387,7 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
     std::cout.flush();
 
     constexpr size_t max_neighbors = 1;
-#pragma omp parallel for shared(m_mesh_data, point_data, m_kdtree)
+#pragma omp parallel for shared(m_mesh_data, point_data, m_kdtree, m_config)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.centroids.size(); ++elem_idx) {
         const ParallelPointCloudReader::PointType3D& centroid = m_mesh_data.centroids[elem_idx];
 
@@ -937,7 +937,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
     // const size_t nvars = m_config.scalar_var_names.size();
 
-#pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data)
+#pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
         if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
             std::cout << "Processing element " << elem_idx << " of " << m_mesh_data.elements.size() << std::endl;
