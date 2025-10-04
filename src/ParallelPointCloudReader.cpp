@@ -89,16 +89,141 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
               lon_var_name = !dim_pair.first.compare("lon")  ? "lon" : "longitude";
             }
         }
-        if (m_vars.count("htopo") || m_vars.count("Elevation")) {
+        if (m_vars.count("htopo") || m_vars.count("Elevation") || m_vars.count("terr")) {
           has_htopo = true;
-          topo_var_name = m_vars.count("htopo") ? "htopo" : "Elevation";
+          topo_var_name = m_vars.count("htopo") ? "htopo" : m_vars.count("Elevation") ? "Elevation" : "terr";
         }
-        if (m_vars.count("landfract") || m_vars.count("LandWater")) {
+        if (m_vars.count("landfract") || m_vars.count("LandWater") || m_vars.count("LANDFRAC")) {
           has_fract = true;
-          fract_var_name = m_vars.count("landfract") ? "landfract" : "LandWater";
+          fract_var_name = m_vars.count("landfract") ? "landfract" : m_vars.count("LandWater") ? "LandWater" : "LANDFRAC";
         }
 
-        if (has_lat && has_lon && has_htopo) {
+        // Check for SCRIP format before USGS format
+        bool has_grid_size = false;
+        bool has_grid_center_lat = false;
+        bool has_grid_center_lon = false;
+        size_t grid_size_val = 0;
+        
+        for (const auto& dim_pair : dims_map) {
+            if (dim_pair.first == "grid_size") {
+                has_grid_size = true;
+                grid_size_val = dim_pair.second.getSize();
+            }
+        }
+        
+        if (m_vars.count("grid_center_lat")) {
+            has_grid_center_lat = true;
+        }
+        if (m_vars.count("grid_center_lon")) {
+            has_grid_center_lon = true;
+        }
+
+        // Check for unstructured grid with lat/lon variables on grid_size
+        bool has_lat_var_on_grid_size = false;
+        bool has_lon_var_on_grid_size = false;
+        
+        if (has_grid_size) {
+            // Check if lat/lon are variables (not dimensions) with grid_size dimension
+            if (m_vars.count("lat")) {
+                PnetCDF::NcmpiVar lat_var = m_vars.at("lat");
+                if (lat_var.getDimCount() == 1 && 
+                    static_cast<size_t>(lat_var.getDims()[0].getSize()) == grid_size_val) {
+                    has_lat_var_on_grid_size = true;
+                }
+            }
+            if (m_vars.count("lon")) {
+                PnetCDF::NcmpiVar lon_var = m_vars.at("lon");
+                if (lon_var.getDimCount() == 1 && 
+                    static_cast<size_t>(lon_var.getDims()[0].getSize()) == grid_size_val) {
+                    has_lon_var_on_grid_size = true;
+                }
+            }
+        }
+
+        // SCRIP format detection (grid_center_lat/lon)
+        if (has_grid_size && has_grid_center_lat && has_grid_center_lon) {
+            m_is_usgs_format = false;  // SCRIP is unstructured
+            
+            // Set coordinate variable names
+            lon_var_name = "grid_center_lon";
+            lat_var_name = "grid_center_lat";
+            m_config.coord_var_names = {lon_var_name, lat_var_name};
+            
+            // Grid size determines total points
+            m_total_points = grid_size_val;
+            nlats = 1;  // No tensor product structure
+            nlons = grid_size_val;
+            
+            // Automatically detect scalar variables (exclude coordinate and corner variables)
+            std::vector<std::string> scalar_vars;
+            for (const auto& var_pair : m_vars) {
+                const std::string& var_name = var_pair.first;
+                // Exclude coordinate variables and corner variables
+                if (var_name != lon_var_name && var_name != lat_var_name &&
+                    var_name != "grid_corner_lat" && var_name != "grid_corner_lon" &&
+                    var_name != "grid_dims") {
+                    
+                    // Check if it's a 1D variable with grid_size dimension
+                    PnetCDF::NcmpiVar var = var_pair.second;
+                    if (var.getDimCount() == 1 && 
+                        static_cast<size_t>(var.getDims()[0].getSize()) == grid_size_val) {
+                        scalar_vars.push_back(var_name);
+                    }
+                }
+            }
+            m_config.scalar_var_names = scalar_vars;
+            
+            std::cout << "Detected SCRIP format NetCDF file" << std::endl;
+            std::cout << "  Grid size: " << grid_size_val << " (unstructured)" << std::endl;
+            std::cout << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name << std::endl;
+            std::cout << "  Scalar variables: ";
+            for (const auto& svar : scalar_vars) {
+                std::cout << svar << " ";
+            }
+            std::cout << std::endl;
+        }
+        // Unstructured grid with lat/lon variables on grid_size (e.g., cubed-sphere)
+        else if (has_grid_size && has_lat_var_on_grid_size && has_lon_var_on_grid_size) {
+            m_is_usgs_format = false;  // Unstructured
+            
+            // Set coordinate variable names
+            lon_var_name = "lon";
+            lat_var_name = "lat";
+            m_config.coord_var_names = {lon_var_name, lat_var_name};
+            
+            // Grid size determines total points
+            m_total_points = grid_size_val;
+            nlats = 1;  // No tensor product structure
+            nlons = grid_size_val;
+            
+            // Automatically detect scalar variables
+            std::vector<std::string> scalar_vars;
+            for (const auto& var_pair : m_vars) {
+                const std::string& var_name = var_pair.first;
+                // Exclude coordinate variables and grid_dims
+                if (var_name != lon_var_name && var_name != lat_var_name &&
+                    var_name != "grid_dims") {
+                    
+                    // Check if it's a 1D variable with grid_size dimension
+                    PnetCDF::NcmpiVar var = var_pair.second;
+                    if (var.getDimCount() == 1 && 
+                        static_cast<size_t>(var.getDims()[0].getSize()) == grid_size_val) {
+                        scalar_vars.push_back(var_name);
+                    }
+                }
+            }
+            m_config.scalar_var_names = scalar_vars;
+            
+            std::cout << "Detected unstructured grid format (cubed-sphere/USGS-topo) NetCDF file" << std::endl;
+            std::cout << "  Grid size: " << grid_size_val << " (unstructured)" << std::endl;
+            std::cout << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name << std::endl;
+            std::cout << "  Scalar variables: ";
+            for (const auto& svar : scalar_vars) {
+                std::cout << svar << " ";
+            }
+            std::cout << std::endl;
+        }
+        else if (has_lat && has_lon && has_htopo) {
             m_is_usgs_format = true;
 
             // Get dimension sizes
@@ -591,7 +716,7 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
 
     // Call the data reading
     MB_CHK_ERR(read_all_data(points));
-    
+
     return MB_SUCCESS;
 }
 
