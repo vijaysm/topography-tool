@@ -91,13 +91,20 @@ ErrorCode ScalarRemapper::extract_mesh_centroids() {
     // Get all elements in the mesh set
     Range elements;
     ErrorCode rval = m_interface->get_entities_by_dimension(m_mesh_set, 2, elements); // 2D elements
+
     if (rval != MB_SUCCESS || elements.empty()) {
-        rval = m_interface->get_entities_by_dimension(m_mesh_set, 3, elements); // 3D elements
+        rval = m_interface->get_entities_by_dimension(m_mesh_set, 0, elements); // It is a point cloud
         if (rval != MB_SUCCESS || elements.empty()) {
-            std::cerr << "No 2D or 3D elements found in mesh" ;
+            LOG(ERROR) << "No 2D QUADS or 0-D (point-cloud) elements found in mesh. Aborting..." ;
             return MB_FAILURE;
         }
+        m_target_is_spectral = false;
+    } else {
+        // ensure all elements are of QUAD type to be able
+        // to use spectral remapping
+        m_target_is_spectral = elements.all_of_type(MBQUAD);
     }
+    // m_target_is_spectral = false;
 
     // Reserve space
     m_mesh_data.elements.clear();
@@ -384,8 +391,6 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
             MB_CHK_ERR(build_kdtree(point_data));
         }
     }
-
-    ;
 
     constexpr size_t max_neighbors = 1;
 #pragma omp parallel for shared(m_mesh_data, point_data, m_kdtree, m_config)
@@ -887,14 +892,20 @@ ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointClo
         }
     }
 
-    ;
-
     LOG(INFO) << "";
-    LOG(INFO) << "Starting PC averaged spectral projection with " << point_data.lonlat_coordinates.size()
-              << " point cloud points and spectral order " << m_config.spectral_order ;
 
     // Project point cloud data to all spectral elements
-    MB_CHK_ERR(project_point_cloud_to_spectral_elements(point_data));
+
+    if (m_target_is_spectral) {
+        LOG(INFO) << "Starting PC averaged spectral projection with " << point_data.size()
+                << " point cloud points and spectral order " << m_config.spectral_order ;
+        MB_CHK_ERR(project_point_cloud_to_spectral_elements(point_data));
+    }
+    else {
+        LOG(INFO) << "Starting PC disk-area averaged projection with " << point_data.size()
+                << " point cloud points" ;
+        MB_CHK_ERR(project_point_cloud_with_area_averaging(point_data));
+    }
 
     return MB_SUCCESS;
 }
@@ -1159,6 +1170,182 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
     return MB_SUCCESS;
 }
+
+
+ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
+    const ParallelPointCloudReader::PointData& point_data) {
+
+    LOG(INFO) << "Performing topography projection with area averaging using " << point_data.size()
+              << " point cloud points" ;
+
+    LOG(INFO) << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" ;
+
+    // Parallel processing of mesh elements
+    std::vector<ErrorCode> element_errors(m_mesh_data.elements.size(), MB_SUCCESS);
+
+    std::cout.precision(10);
+
+    std::vector<double> vertex_coords(m_mesh_data.elements.size() * 3, 0.0);
+    std::vector<double> vertex_areas(m_mesh_data.elements.size(), 0.0);
+
+    MB_CHK_ERR(m_interface->get_coords(m_mesh_data.elements.data(), m_mesh_data.elements.size(), vertex_coords.data()));
+
+    Tag areaTag;
+    MB_CHK_ERR(m_interface->tag_get_handle("area", areaTag));
+    MB_CHK_ERR(m_interface->tag_get_data(areaTag, m_mesh_data.elements.data(), m_mesh_data.elements.size(), vertex_areas.data()));
+
+#pragma omp parallel for schedule(dynamic, 1) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface, vertex_coords, vertex_areas)
+    for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
+        if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
+#pragma omp critical
+            LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(m_mesh_data.elements.size()) ;
+        }
+
+        EntityHandle vertex = m_mesh_data.elements[elem_idx];
+        ParallelPointCloudReader::PointType3D gll_point;
+        std::copy_n(vertex_coords.data() + elem_idx * 3, 3, gll_point.begin());
+        const double search_radius = std::sqrt(vertex_areas[elem_idx]) * 180.0 / M_PI; // convert from radians^2 to degrees^2
+
+        // Initialize element-averaged values (thread-local)
+        std::unordered_map<std::string, double> element_averages_d;
+        // std::unordered_map<std::string, int> element_averages_i;
+        std::unordered_map<std::string, double> total_weights;  // Per-variable weight tracking
+
+        // Optimized KD-tree search with thread-local storage:
+        thread_local std::vector<size_t> neighbor_indices;
+        thread_local std::vector<ParallelPointCloudReader::CoordinateType> distances_sq;
+        thread_local std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>> matches;
+
+        neighbor_indices.clear();
+        distances_sq.clear();
+        matches.clear();
+
+        // const size_t max_neighbors = 5000; // if it exceeds, perhaps SE mesh resolution is too coarse?
+
+        auto nearest_points = find_nearest_point(gll_point, point_data, nullptr, &search_radius);
+
+        // Check if radius search found valid results (not just dummy -1 index)
+        bool has_valid_results = !nearest_points.empty() &&
+                                    nearest_points[0].first != static_cast<size_t>(-1);
+
+        if (!has_valid_results) {
+            // Fallback to nearest neighbor WITHOUT radius constraint
+            const size_t single_neighbor = 1;
+            const ParallelPointCloudReader::CoordinateType no_radius = 0.0;  // 0.0 means no radius constraint
+            nearest_points = find_nearest_point(gll_point, point_data, &single_neighbor, &no_radius);
+        }
+
+        // Check if we still have zero points after fallback
+        if (nearest_points.empty()) {
+            if (elem_idx < 1) {
+                #pragma omp critical
+                LOG(WARNING) << "WARNING: Element " << elem_idx
+                            << ") has ZERO neighbors even after fallback!" ;
+                element_errors[elem_idx] = MB_FAILURE;
+            }
+            continue; // Skip this GLL node
+        }
+
+        // Pre-compute inverse distance weights (vectorizable)
+        thread_local std::vector<ParallelPointCloudReader::CoordinateType> inv_weights;
+        inv_weights.resize(nearest_points.size(), 1.0);
+
+        // Process each scalar variable
+        for (const auto& var_name : m_config.scalar_var_names) {
+            double weighted_sum = 0.0;
+            double weight_sum = 0.0;
+
+            // Check if it's a double variable
+            auto var_it = point_data.d_scalar_variables.find(var_name);
+            if (!m_config.is_usgs_format && var_it != point_data.d_scalar_variables.end()) {
+                const auto& values = var_it->second;
+
+                // Vectorized weighted sum computation
+                #pragma omp simd reduction(+:weighted_sum,weight_sum)
+                for (size_t k = 0; k < nearest_points.size(); ++k) {
+                    size_t pt_idx = nearest_points[k].first;
+                    if (pt_idx < values.size()) {
+                        weighted_sum += inv_weights[k] * values[pt_idx];
+                        weight_sum += inv_weights[k];
+                    }
+                }
+            } else {
+                // Check if it's an integer variable
+                auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                if (ivar_it != point_data.i_scalar_variables.end()) {
+                    const auto& values = ivar_it->second;
+
+                    // Vectorized weighted sum computation for integers
+                    #pragma omp simd reduction(+:weighted_sum,weight_sum)
+                    for (size_t k = 0; k < nearest_points.size(); ++k) {
+                        size_t pt_idx = nearest_points[k].first;
+                        if (pt_idx < values.size()) {
+                            weighted_sum += inv_weights[k] * static_cast<double>(values[pt_idx]);
+                            weight_sum += inv_weights[k];
+                        }
+                    }
+                }
+            }
+
+            // Add GLL-weighted contribution to element average
+            if (fabs(weight_sum) > 0.0)
+            {
+                element_averages_d[var_name] = weighted_sum / weight_sum;
+            }
+        }
+
+        // Normalize element averages and store in mesh data (thread-safe writes)
+        // Use per-variable weights for proper normalization
+        for (const auto& var_name : m_config.scalar_var_names) {
+            auto it = element_averages_d.find(var_name);
+
+            if (it != element_averages_d.end()) {
+                auto var_it = point_data.d_scalar_variables.find(var_name);
+                if (var_it != point_data.d_scalar_variables.end()) {
+                    m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second;
+                }
+                else {
+                    auto ivar_it = point_data.i_scalar_variables.find(var_name);
+                    if (ivar_it != point_data.i_scalar_variables.end()) {
+                        m_mesh_data.i_scalar_fields[var_name][elem_idx] = static_cast<int>(it->second);
+                    }
+                }
+            }
+        }
+
+    } // End of parallel region
+
+    // Check for errors after parallel processing
+    size_t error_count = 0;
+    for (size_t i = 0; i < element_errors.size(); ++i) {
+        if (element_errors[i] != MB_SUCCESS) {
+            error_count++;
+        }
+    }
+
+    if (error_count > 0) {
+        LOG(ERROR) << "Warning: " << error_count << " elements failed processing out of "
+                  << m_mesh_data.elements.size() << " total elements" ;
+    }
+
+    // Thread-safe debugging output
+    for (const auto& var_name : m_config.scalar_var_names) {
+            std::array<double, 5> values;
+            for (size_t i = 0; i < std::min(size_t(5), m_mesh_data.elements.size()); ++i) {
+                auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
+                auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
+                if (d_it != m_mesh_data.d_scalar_fields.end()) {
+                    values[i] = d_it->second[i];
+                } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
+                    values[i] = i_it->second[i];
+                }
+            }
+            VLOG(2) << "Sample values for " << var_name << ": " << values;
+    }
+
+    return MB_SUCCESS;
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 

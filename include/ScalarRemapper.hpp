@@ -91,6 +91,7 @@ protected:
     EntityHandle m_mesh_set;
     RemapConfig m_config;
     MeshData m_mesh_data;
+    bool m_target_is_spectral;
 
 public:
     ScalarRemapper(Interface* interface, EntityHandle mesh_set);
@@ -168,6 +169,10 @@ private:
 
     // Point cloud to spectral element projection
     ErrorCode project_point_cloud_to_spectral_elements(
+        const ParallelPointCloudReader::PointData& point_data);
+
+    // Point cloud to target projection using disk-area averaging
+    ErrorCode project_point_cloud_with_area_averaging(
         const ParallelPointCloudReader::PointData& point_data);
 };
 
