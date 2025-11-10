@@ -842,7 +842,11 @@ std::vector< size_t > radius_search_kdtree( const MOABKDTree& tree,
     params.sorted = true;
 
     const ParallelPointCloudReader::CoordinateType query_pt_sq = query_pt[0] * query_pt[0] + query_pt[1] * query_pt[1] + query_pt[2] * query_pt[2];
-    assert( query_pt_sq > 1.0 - 1e-10 && query_pt_sq < 1.0 + 1.0e-10 ); // Check if the point is on the unit sphere
+    if( query_pt_sq > 1.0 - 1e-10 && query_pt_sq < 1.0 + 1.0e-10 ) // Check if the point is on the unit sphere
+    {
+        LOG(FATAL) << "Point " << query_pt[0] << ", " << query_pt[1] << ", " << query_pt[2] << " is not on the unit sphere";
+        throw std::runtime_error("Point is not on the unit sphere");
+    }
 
     tree.radiusSearch( query_pt.data(), radius_sq, matches, params );
 
@@ -952,7 +956,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 
 #pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
-        if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
+        if ((elem_idx  % (m_mesh_data.elements.size() / 10)) == 0) {
 #pragma omp critical
             LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(m_mesh_data.elements.size()) ;
         }
@@ -1074,7 +1078,6 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                         const auto& values = var_it->second;
 
                         // Vectorized weighted sum computation
-                        #pragma omp simd reduction(+:weighted_sum,weight_sum)
                         for (size_t k = 0; k < nearest_points.size(); ++k) {
                             size_t pt_idx = nearest_points[k].first;
                             if (pt_idx < values.size()) {
@@ -1089,7 +1092,6 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                             const auto& values = ivar_it->second;
 
                             // Vectorized weighted sum computation for integers
-                            #pragma omp simd reduction(+:weighted_sum,weight_sum)
                             for (size_t k = 0; k < nearest_points.size(); ++k) {
                                 size_t pt_idx = nearest_points[k].first;
                                 if (pt_idx < values.size()) {
@@ -1201,7 +1203,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
             LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(m_mesh_data.elements.size()) ;
         }
 
-        EntityHandle vertex = m_mesh_data.elements[elem_idx];
+        // EntityHandle vertex = m_mesh_data.elements[elem_idx];
         ParallelPointCloudReader::PointType3D gll_point;
         std::copy_n(vertex_coords.data() + elem_idx * 3, 3, gll_point.begin());
         const double search_radius = std::sqrt(vertex_areas[elem_idx]) * 180.0 / M_PI; // convert from radians^2 to degrees^2
@@ -1261,7 +1263,6 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
                 const auto& values = var_it->second;
 
                 // Vectorized weighted sum computation
-                #pragma omp simd reduction(+:weighted_sum,weight_sum)
                 for (size_t k = 0; k < nearest_points.size(); ++k) {
                     size_t pt_idx = nearest_points[k].first;
                     if (pt_idx < values.size()) {
@@ -1276,7 +1277,6 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
                     const auto& values = ivar_it->second;
 
                     // Vectorized weighted sum computation for integers
-                    #pragma omp simd reduction(+:weighted_sum,weight_sum)
                     for (size_t k = 0; k < nearest_points.size(); ++k) {
                         size_t pt_idx = nearest_points[k].first;
                         if (pt_idx < values.size()) {

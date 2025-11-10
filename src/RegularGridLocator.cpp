@@ -236,8 +236,8 @@ void RegularGridLocator::knnSearch(const ParallelPointCloudReader::PointType3D& 
             for (size_t ilat = pole_ilat - 1; max_heap.size() < k && ilat < m_nlat; --ilat) {
                 for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
                     ParallelPointCloudReader::CoordinateType dist = compute_distance(query_lon, query_lat, m_lons[ilon], m_lats[ilat]);
-                    size_t idx = get_linear_index(ilat, ilon);
-                    max_heap.push({dist * dist, idx});
+                    size_t index = get_linear_index(ilat, ilon);
+                    max_heap.push({dist * dist, index});
                 }
             }
         }
