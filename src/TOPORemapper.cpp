@@ -92,9 +92,6 @@ int main(int argc, char* argv[]) {
 
         // Remapping options
         std::string remap_method = "PC_SPECTRAL";
-        int spectral_order = 4;
-        bool continuous_gll = true;
-        bool apply_bubble = true;
         bool verbose = false;
         bool spectral_target = false;
 
@@ -105,13 +102,10 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("lon-var,", "Longitude variable name (bypasses format detection)", &lon_var);
         opts.addOpt<std::string>("lat-var,", "Latitude variable name (bypasses format detection)", &lat_var);
         opts.addOpt<std::string>("area-var,", "Area variable name to read and store", &area_var);
-        opts.addOpt<std::string>("fields,f", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
-        opts.addOpt<std::string>("square-fields,", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
+        opts.addOpt<std::string>("fields", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
+        opts.addOpt<std::string>("square-fields", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
 
-        opts.addOpt<std::string>("remap-method,m", "Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)", &remap_method);
-        opts.addOpt<int>("spectral-order,p", "Spectral element order for PC_SPECTRAL method (default: 4)", &spectral_order);
-        opts.addOpt<void>("no-continuous-gll,", "Disable continuous GLL nodes", &continuous_gll);
-        opts.addOpt<void>("no-bubble-correction,", "Disable bubble correction", &apply_bubble);
+        opts.addOpt<std::string>("remap-method", "Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)", &remap_method);
         opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh", &spectral_target);
         opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps", &verbose);
 
@@ -234,7 +228,7 @@ int main(int argc, char* argv[]) {
 
                     // Convert to Cartesian (unit sphere)
                     std::array<double, 3> coords;
-                    RLLtoXYZ_Deg(lat[index], lon[index], coords);
+                    RLLtoXYZ_Deg(lon[index], lat[index], coords);
 
                     MB_CHK_SET_ERR(mb->create_vertex(coords.data(), entities[index]), "Failed to create vertex");
                 }
@@ -331,10 +325,6 @@ int main(int argc, char* argv[]) {
                 }
 
                 remap_config.max_neighbors = 1;
-                remap_config.spectral_order = spectral_order;
-                remap_config.continuous_gll = continuous_gll;
-                remap_config.apply_bubble_correction = apply_bubble;
-                remap_config.use_element_centroids = true;
                 remap_config.is_usgs_format = reader.is_usgs_format();
 
                 MB_CHK_SET_ERR(remapper->configure(remap_config), "Failed to configure remapper");

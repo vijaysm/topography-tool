@@ -902,7 +902,7 @@ ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointClo
 
     if (m_target_is_spectral) {
         LOG(INFO) << "Starting PC averaged spectral projection with " << point_data.size()
-                << " point cloud points and spectral order " << m_config.spectral_order ;
+                << " point cloud points and spectral order " << spectral_order ;
         MB_CHK_ERR(project_point_cloud_to_spectral_elements(point_data));
     }
     else {
@@ -939,7 +939,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
     LOG(INFO) << "Performing spectral element projection with " << point_data.lonlat_coordinates.size()
               << " point cloud points" ;
 
-    const int nP = m_config.spectral_order;
+    const int nP = spectral_order;
 
     LOG(INFO) << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" ;
 
@@ -982,7 +982,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
         std::vector<double> dataGLLJacobian;
 
         // Generate finite element metadata using existing function
-        /* double dNumericalArea = */ Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian, m_config.apply_bubble_correction);
+        /* double dNumericalArea = */ Remapper_GenerateFEMetaData(m_interface, face, dG, dW, dataGLLJacobian, apply_bubble_correction);
 
         // Initialize element-averaged values (thread-local)
         std::unordered_map<std::string, double> element_averages_d;

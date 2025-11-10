@@ -67,16 +67,9 @@ public:
     struct RemapConfig {
         std::vector<std::string> scalar_var_names;  // Variables to remap
         int max_neighbors = 1;                      // Maximum neighbors to consider
-        bool use_element_centroids = true;          // Use element centroids vs vertices
-        bool normalize_weights = true;              // Normalize interpolation weights
         bool is_usgs_format = false;                 // Use USGS format for point cloud
         bool use_kd_tree = false;                   // Use KD-tree (true) or RegularGridLocator (false) for USGS format
         RegularGridLocator::DistanceMetric distance_metric = RegularGridLocator::HAVERSINE; // Distance metric for RegularGridLocator
-
-        // Spectral element projection parameters
-        int spectral_order = 4;                     // Spectral element order (nP)
-        bool continuous_gll = true;                 // Use continuous GLL nodes
-        bool apply_bubble_correction = false;       // Apply bubble correction for mass conservation
     };
 
     struct MeshData {
@@ -86,6 +79,10 @@ public:
         std::unordered_map<std::string, std::vector<int>> i_scalar_fields; // Remapped data
     };
 
+    // Spectral element projection parameters: immutable for now
+    const int spectral_order = 4;                     // Spectral element order (nP)
+    const bool continuous_gll = true;                 // Use continuous GLL nodes
+    const bool apply_bubble_correction = false;       // Apply bubble correction for mass conservation
 protected:
     Interface* m_interface;
     EntityHandle m_mesh_set;
