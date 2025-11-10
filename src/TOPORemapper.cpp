@@ -8,12 +8,17 @@ INITIALIZE_EASYLOGGINGPP
 #include "ScalarRemapper.hpp"
 #include "moab/Core.hpp"
 #include "moab/ProgOptions.hpp"
+
+// Standard includes
 #include <mpi.h>
 #include <iostream>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <filesystem>
+
+#include <omp.h>
 
 using namespace moab;
 
@@ -35,11 +40,24 @@ std::vector<std::string> parse_comma_separated(const std::string& input) {
     return result;
 }
 
+// Source - https://stackoverflow.com/a
+// Posted by Moehre2, modified by community. See post 'Timeline' for change history
+// Retrieved 2025-11-10, License - CC BY-SA 4.0
+int get_num_threads(void) {
+    int num_threads = 0;
+    #pragma omp parallel reduction(+:num_threads)
+    num_threads += 1;
+    return num_threads;
+}
+
+
 /**
  * @brief TOPORemapper - Maps NetCDF point cloud data to mesh elements
  * NOTE: OpenMP parallelism is available - set OMP_NUM_THREADS environment variable
  */
 int main(int argc, char* argv[]) {
+    using namespace PnetCDF;
+
     // Initialize MPI
     MPI_Init(&argc, &argv);
 
@@ -78,6 +96,7 @@ int main(int argc, char* argv[]) {
         bool continuous_gll = true;
         bool apply_bubble = true;
         bool verbose = false;
+        bool spectral_target = false;
 
         opts.addOpt<std::string>("source,s", "Source NetCDF point cloud file", &source_file);
         opts.addOpt<std::string>("target,t", "Target mesh file (H5M)", &target_file);
@@ -93,6 +112,7 @@ int main(int argc, char* argv[]) {
         opts.addOpt<int>("spectral-order,p", "Spectral element order for PC_SPECTRAL method (default: 4)", &spectral_order);
         opts.addOpt<void>("no-continuous-gll,", "Disable continuous GLL nodes", &continuous_gll);
         opts.addOpt<void>("no-bubble-correction,", "Disable bubble correction", &apply_bubble);
+        opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh", &spectral_target);
         opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps", &verbose);
 
         opts.parseCommandLine(argc, argv);
@@ -125,7 +145,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (rank == 0) {
-            LOG(INFO) << "";
+            LOG(INFO) << "==================================";
             LOG(INFO) << "=== TOPORemapper Configuration ===";
             LOG(INFO) << "Source file: " << source_file;
             LOG(INFO) << "Target file: " << target_file;
@@ -144,7 +164,8 @@ int main(int argc, char* argv[]) {
             if (!square_fields_str.empty()) {
                 LOG(INFO) << "Square fields: " << square_fields_str;
             }
-            LOG(INFO) << "Remap method: " << remap_method;
+            LOG(INFO) << "Remap method: " << remap_method << " (" << (spectral_target ? "Spectral Target" : "Generic Target") << ")";
+            LOG(INFO) << "Number of threads: " << get_num_threads();
             LOG(INFO) << "====================================\n";
         }
 
@@ -161,12 +182,76 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Load mesh with parallel options
-        std::string read_opts = "DEBUG_IO=0";
-        if( size > 1 )  // If reading in parallel, need to tell it how
-            read_opts += ";PARALLEL=READ_PART;PARTITION=PARALLEL_PARTITION;PARALLEL_RESOLVE_SHARED_ENTS;DEBUG_PIO=0";
-        MB_CHK_SET_ERR( mb->load_file(target_file.c_str(), &mesh_set, read_opts.c_str()), "Failed to load mesh file");
 
+        std::vector<EntityHandle> entities;
+        if (spectral_target) {
+            // Always use parallel options
+            std::string read_opts = "DEBUG_IO=0";
+            if( size > 1 )  // If reading in parallel, need to tell it how
+                read_opts += ";PARALLEL=READ_PART;PARTITION=PARALLEL_PARTITION;PARALLEL_RESOLVE_SHARED_ENTS;DEBUG_PIO=0";
+            // Load the mesh
+            MB_CHK_SET_ERR( mb->load_file(target_file.c_str(), &mesh_set, read_opts.c_str()), "Failed to load mesh file");
+
+            // Get all elements in the mesh set
+            MB_CHK_SET_ERR( mb->get_entities_by_dimension(mesh_set, 2, entities), "Failed to get elements by dimension");
+
+        } else {
+            // Assume the netcdf file has dimensions of ncol, ncells, ncorners (but we only use ncol)
+            // And there are lon(ncol), lat(ncol), area(ncol) variables available.
+            // If even one of these are missing, throw an error and exit.
+            // If all are present, load the file and add the loaded points to the mesh set.
+
+            try {
+                NcmpiFile nc(MPI_COMM_WORLD, target_file.c_str(), NcmpiFile::read);
+
+                // Dimension
+                NcmpiDim ncolDim = nc.getDim("ncol");
+                MPI_Offset ncol = ncolDim.getSize();
+
+                std::vector<double> lat(ncol), lon(ncol), area(ncol);
+
+                // Variables
+                NcmpiVar latVar  = nc.getVar("lat");
+                NcmpiVar lonVar  = nc.getVar("lon");
+                NcmpiVar areaVar = nc.getVar("area");
+
+                // Reads (collective)
+                latVar.getVar_all(lat.data());
+                lonVar.getVar_all(lon.data());
+                areaVar.getVar_all(area.data());
+
+                // Close file
+                ncmpi_close(nc.getId());
+
+                // Create area tag: the only one we really need for the algorithm
+                Tag area_tag;
+                MB_CHK_SET_ERR(mb->tag_get_handle("area", 1, MB_TYPE_DOUBLE, area_tag,
+                        MB_TAG_DENSE | MB_TAG_CREAT), "Failed to create area tag");
+
+                // Create vertices
+                entities.resize(ncol);
+                for (MPI_Offset index = 0; index < ncol; ++index) {
+
+                    // Convert to Cartesian (unit sphere)
+                    std::array<double, 3> coords;
+                    RLLtoXYZ_Deg(lat[index], lon[index], coords);
+
+                    MB_CHK_SET_ERR(mb->create_vertex(coords.data(), entities[index]), "Failed to create vertex");
+                }
+
+                // Set area tag for all vertices
+                MB_CHK_SET_ERR(mb->tag_set_data(area_tag, entities.data(), entities.size(), area.data()), "Failed to set area tag");
+
+                // Create meshset for vertices
+                MB_CHK_SET_ERR(mb->add_entities(mesh_set, entities.data(), entities.size()), "Failed to add vertices to set");
+
+            }
+            catch (exceptions::NcInvalidArg& e) {
+                LOG(ERROR) << "Error: Could not open NetCDF file: "
+                        << target_file << " and create a valid MOAB meshset.";
+                return MB_FAILURE;
+            }
+        }
         if (rank == 0) {
             LOG(INFO) << "Loaded target mesh: " << target_file;
         }
@@ -212,7 +297,7 @@ int main(int argc, char* argv[]) {
             auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(read_time - start_time);
 
             if (rank == 0) {
-                LOG(INFO) << "";
+                LOG(INFO) << "===================================";
                 LOG(INFO) << "=== Point Cloud Reading Results ===";
                 LOG(INFO) << "Total points in dataset: " << reader.get_point_count();
                 LOG(INFO) << "Points read: " << local_points.size();
@@ -264,13 +349,88 @@ int main(int argc, char* argv[]) {
                     LOG(INFO) << "Successfully created remapped tags on mesh elements";
                 }
 
-                // Save mesh with remapped data
-                std::string write_opts = "";
-                if (size > 1) {
-                    write_opts = "PARALLEL=WRITE_PART";
+                bool write_nc_file = false;
+                std::filesystem::path filePath = output_file;
+                if (!spectral_target && filePath.extension() != ".h5m") {
+                    write_nc_file = true;
                 }
-                MB_CHK_SET_ERR(mb->write_file(output_file.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1),
-                               "Failed to write remapped mesh");
+
+                if (write_nc_file) {
+
+                    // Copy target file to output file so that we can append the new variables
+                    // without modifying anything existing in the target file
+                    std::filesystem::copy_file(target_file, output_file, std::filesystem::copy_options::overwrite_existing);
+
+                    // Create output file
+                    NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
+
+                    // Compute number of elements
+                    NcmpiDim ncol = out.getDim("ncol");
+                    const MPI_Offset nelems = ncol.getSize();
+                    std::vector<NcmpiDim> dimid;
+                    dimid.push_back(ncol);
+
+                    // ---- Add new variables that we have already remapped  ----
+                    // first: scalar topography field per vertex
+                    // out.addVar("topography", ncmpiDouble, dimid);
+                    if (!config.scalar_var_names.empty()) {
+                        for (const auto& field_name : config.scalar_var_names) {
+                            out.addVar(field_name, ncmpiDouble, dimid);
+                        }
+                    }
+                    if (!config.square_field_names.empty()) {
+                        for (const auto& field_name : config.square_field_names) {
+                            out.addVar(field_name + "_squared", ncmpiDouble, dimid);
+                        }
+                    }
+
+                    // End define mode
+                    out.enddef();
+
+                    // ---- Write remapped data to new file ----
+                    if (!config.scalar_var_names.empty()) {
+                        for (const auto& field_name : config.scalar_var_names) {
+                            NcmpiVar var = out.getVar(field_name);
+                            Tag tag;
+                            const char* field_name_cstr = field_name.c_str();
+                            MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+                            std::vector<int> values(nelems, 0); // set all to 1.0
+                            MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
+                                    "Failed to write remapped mesh");
+                            std::vector<MPI_Offset> start(1), count(1);
+                            start[0] = 0;
+                            count[0] = nelems;
+                            var.putVar_all(start, count, values.data());
+                        }
+                    }
+                    if (!config.square_field_names.empty()) {
+                        for (const auto& field_name : config.square_field_names) {
+                            NcmpiVar var = out.getVar(field_name + "_squared");
+                            Tag tag;
+                            std::string field_name_squared = field_name + "_squared";
+                            const char* field_name_cstr = field_name_squared.c_str();
+                            MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+                            std::vector<int> values(nelems, 0); // set all to 1.0
+                            MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
+                                    "Failed to write remapped mesh");
+                            std::vector<MPI_Offset> start(1), count(1);
+                            start[0] = 0;
+                            count[0] = nelems;
+                            var.putVar_all(start, count, values.data());
+                        }
+                    }
+
+                    ncmpi_close(out.getId());
+                }
+                else {
+                    // Save mesh with remapped data
+                    std::string write_opts = "";
+                    if (size > 1) {
+                        write_opts = "PARALLEL=WRITE_PART";
+                    }
+                    MB_CHK_SET_ERR(mb->write_file(output_file.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1),
+                                "Failed to write remapped mesh");
+                }
 
                 if (rank == 0) {
                     LOG(INFO) << "Saved mesh with remapped data to: " << output_file;
