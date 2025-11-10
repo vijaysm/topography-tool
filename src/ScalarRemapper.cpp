@@ -1,3 +1,4 @@
+#include "easylogging.hpp"
 #include "ScalarRemapper.hpp"
 #include "moab/CartVect.hpp"
 #include "moab/IntxMesh/IntxUtils.hpp"
@@ -43,21 +44,21 @@ ErrorCode ScalarRemapper::configure(const RemapConfig& config) {
     // Extract mesh element centroids
     MB_CHK_ERR(extract_mesh_centroids());
 
-    std::cout << "Configured scalar remapper with " << m_mesh_data.elements.size()
-              << " mesh elements" << std::endl;
-    std::cout << "Variables to remap: ";
+    LOG(INFO) << "Configured scalar remapper with " << m_mesh_data.elements.size()
+              << " mesh elements" ;
+    LOG(INFO) << "Variables to remap: ";
     for (const auto& var : m_config.scalar_var_names) {
-        std::cout << var << " ";
+        LOG(INFO) << "\t" << var;
     }
-    std::cout << std::endl;
 
     return MB_SUCCESS;
 }
 
 ErrorCode ScalarRemapper::remap_scalars(const ParallelPointCloudReader::PointData& point_data) {
 
-    std::cout << "Starting scalar remapping with " << point_data.size()
-              << " point cloud points" << std::endl;
+    LOG(INFO) << "";
+    LOG(INFO) << "Starting scalar remapping with " << point_data.size()
+              << " point cloud points" ;
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -69,7 +70,7 @@ ErrorCode ScalarRemapper::remap_scalars(const ParallelPointCloudReader::PointDat
             m_mesh_data.d_scalar_fields[var_name].resize(m_mesh_data.elements.size(), 0.0);
     }
 
-    std::cout.flush();
+    ;
 
     // Perform the actual remapping (implemented by derived classes)
     MB_CHK_ERR(perform_remapping(point_data));
@@ -77,7 +78,7 @@ ErrorCode ScalarRemapper::remap_scalars(const ParallelPointCloudReader::PointDat
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    std::cout << "Remapping completed in " << duration.count() / 1000.0 << " seconds" << std::endl;
+    LOG(INFO) << "Remapping completed in " << duration.count() / 1000.0 << " seconds" ;
 
     // Validate results and print statistics
     MB_CHK_ERR(validate_remapping_results());
@@ -93,7 +94,7 @@ ErrorCode ScalarRemapper::extract_mesh_centroids() {
     if (rval != MB_SUCCESS || elements.empty()) {
         rval = m_interface->get_entities_by_dimension(m_mesh_set, 3, elements); // 3D elements
         if (rval != MB_SUCCESS || elements.empty()) {
-            std::cerr << "No 2D or 3D elements found in mesh" << std::endl;
+            std::cerr << "No 2D or 3D elements found in mesh" ;
             return MB_FAILURE;
         }
     }
@@ -113,7 +114,7 @@ ErrorCode ScalarRemapper::extract_mesh_centroids() {
         m_mesh_data.centroids.push_back(centroid);
     }
 
-    std::cout << "Extracted " << m_mesh_data.elements.size() << " element centroids" << std::endl;
+    LOG(INFO) << "Extracted " << m_mesh_data.elements.size() << " element centroids" ;
 
     return MB_SUCCESS;
 }
@@ -140,7 +141,7 @@ ErrorCode ScalarRemapper::validate_remapping_results() {
         const auto& field_data = field_pair.second;
         for (double value : field_data) {
             if (std::isnan(value) || std::isinf(value)) {
-                std::cerr << "Invalid value detected in remapped field " << field_pair.first << std::endl;
+                std::cerr << "Invalid value detected in remapped field " << field_pair.first ;
                 return MB_FAILURE;
             }
         }
@@ -150,7 +151,7 @@ ErrorCode ScalarRemapper::validate_remapping_results() {
         const auto& field_data = field_pair.second;
         for (int value : field_data) {
             if (std::isnan(value) || std::isinf(value)) {
-                std::cerr << "Invalid value detected in remapped field " << field_pair.first << std::endl;
+                std::cerr << "Invalid value detected in remapped field " << field_pair.first ;
                 return MB_FAILURE;
             }
         }
@@ -161,7 +162,7 @@ ErrorCode ScalarRemapper::validate_remapping_results() {
 
 void ScalarRemapper::print_remapping_statistics() {
 
-    std::cout << "\n=== Remapping Statistics ===" << std::endl;
+    LOG(INFO) << "\n=== Remapping Statistics ===" ;
 
     for (const auto& field_pair : m_mesh_data.d_scalar_fields) {
         const std::string& var_name = field_pair.first;
@@ -174,8 +175,8 @@ void ScalarRemapper::print_remapping_statistics() {
         double sum = std::accumulate(field_data.begin(), field_data.end(), 0.0);
         double avg = sum / field_data.size();
 
-        std::cout << var_name << " - Min: " << min_val << ", Max: " << max_val
-                  << ", Avg: " << avg << " (on " << field_data.size() << " elements)" << std::endl;
+        LOG(INFO) << var_name << " - Min: " << min_val << ", Max: " << max_val
+                  << ", Avg: " << avg << " (on " << field_data.size() << " elements)" ;
     }
 
     for (const auto& field_pair : m_mesh_data.i_scalar_fields) {
@@ -189,8 +190,8 @@ void ScalarRemapper::print_remapping_statistics() {
         double sum = std::accumulate(field_data.begin(), field_data.end(), 0);
         double avg = sum / field_data.size();
 
-        std::cout << var_name << " - Min: " << min_val << ", Max: " << max_val
-                  << ", Avg: " << avg << " (on " << field_data.size() << " elements)" << std::endl;
+        LOG(INFO) << var_name << " - Min: " << min_val << ", Max: " << max_val
+                  << ", Avg: " << avg << " (on " << field_data.size() << " elements)" ;
     }
 }
 
@@ -226,7 +227,7 @@ ErrorCode ScalarRemapper::write_to_tags(const std::string& tag_prefix) {
         // Create or get the tag
         MB_CHK_ERR(write_to_tag<double>(m_interface, tag_name, m_mesh_data.elements, field_data));
 
-        std::cout << "Created tag '" << tag_name << "' with " << field_data.size() << " values" << std::endl;
+        LOG(INFO) << "Created tag '" << tag_name << "' with " << field_data.size() << " values" ;
     }
 
     for (const auto& field_pair : m_mesh_data.i_scalar_fields) {
@@ -239,7 +240,7 @@ ErrorCode ScalarRemapper::write_to_tags(const std::string& tag_prefix) {
         // Create or get the tag
         MB_CHK_ERR(write_to_tag<int>(m_interface, tag_name, m_mesh_data.elements, field_data));
 
-        std::cout << "Created tag '" << tag_name << "' with " << field_data.size() << " values" << std::endl;
+        LOG(INFO) << "Created tag '" << tag_name << "' with " << field_data.size() << " values" ;
     }
 
     return MB_SUCCESS;
@@ -260,12 +261,12 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
     }
 
     try {
-        std::cout << "Building RegularGridLocator for USGS format data..." << std::endl;
+        LOG(INFO) << "Building RegularGridLocator for USGS format data..." ;
 
         // For USGS format, use the 1D lat/lon arrays directly
         if (!point_data.latitudes.empty() && !point_data.longitudes.empty()) {
-            std::cout << "Using stored 1D arrays: " << point_data.latitudes.size()
-                      << " latitudes x " << point_data.longitudes.size() << " longitudes" << std::endl;
+            LOG(INFO) << "Using stored 1D arrays: " << point_data.latitudes.size()
+                      << " latitudes x " << point_data.longitudes.size() << " longitudes" ;
 
             // Convert to std::vector<double> if needed
             std::vector<double> lats(point_data.latitudes.begin(), point_data.latitudes.end());
@@ -278,7 +279,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
 
             auto build_end = std::chrono::high_resolution_clock::now();
             auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
-            std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" ;
         } else {
             // Fallback: extract unique lat/lon values from point cloud (for non-USGS or legacy code)
             std::vector<double> lats, lons;
@@ -292,7 +293,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
             lons.assign(unique_lons.begin(), unique_lons.end());
             lats.assign(unique_lats.begin(), unique_lats.end());
 
-            std::cout << "Extracted grid dimensions: " << lats.size() << " x " << lons.size() << std::endl;
+            LOG(INFO) << "Extracted grid dimensions: " << lats.size() << " x " << lons.size() ;
 
             auto build_start = std::chrono::high_resolution_clock::now();
             m_grid_locator = std::unique_ptr<RegularGridLocator>(
@@ -301,12 +302,12 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
 
             auto build_end = std::chrono::high_resolution_clock::now();
             auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
-            std::cout << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" << std::endl;
+            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" ;
         }
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "Error building RegularGridLocator: " << e.what() << std::endl;
+        std::cerr << "Error building RegularGridLocator: " << e.what() ;
         m_grid_locator_built = false;
         return MB_FAILURE;
     }
@@ -329,7 +330,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
         // For structured grids, we need to materialize coordinates for KD-tree
         std::vector<ParallelPointCloudReader::PointType> coords_for_kdtree;
         if (point_data.is_structured_grid) {
-            std::cout << "Materializing " << point_data.size() << " coordinates for KD-tree from structured grid..." << std::endl;
+            LOG(INFO) << "Materializing " << point_data.size() << " coordinates for KD-tree from structured grid..." ;
             coords_for_kdtree.resize(point_data.size());
             for (size_t i = 0; i < point_data.size(); ++i) {
                 coords_for_kdtree[i] = point_data.get_lonlat(i);
@@ -341,7 +342,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
         m_adapter = std::unique_ptr<PointCloudAdapter>(new PointCloudAdapter(coords));
 
         // Create KD-tree with 10 max leaf size for good performance
-        std::cout << "Building KD-tree index now with " << num_threads << " threads..." << std::endl;
+        LOG(INFO) << "Building KD-tree index now with " << num_threads << " threads..." ;
 
         auto redist_start = std::chrono::high_resolution_clock::now();
         m_kdtree = std::unique_ptr<KDTree>(new KDTree(3, *m_adapter,
@@ -356,12 +357,12 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
 
         auto redist_end = std::chrono::high_resolution_clock::now();
         auto redist_duration = std::chrono::duration_cast<std::chrono::milliseconds>(redist_end - redist_start);
-        std::cout << "KD-tree build time: " << redist_duration.count()/1000.0 << " seconds" << std::endl;
-        std::cout << "Built KD-tree index for " << point_data.size() << " points" << std::endl;
+        LOG(INFO) << "KD-tree build time: " << redist_duration.count()/1000.0 << " seconds" ;
+        LOG(INFO) << "Built KD-tree index for " << point_data.size() << " points" ;
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "Error building KD-tree: " << e.what() << std::endl;
+        std::cerr << "Error building KD-tree: " << e.what() ;
         m_kdtree_built = false;
         return MB_FAILURE;
     }
@@ -369,7 +370,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
 
 ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
     if (point_data.size() == 0) {
-        std::cout << "No point cloud data available for remapping" << std::endl;
+        LOG(INFO) << "No point cloud data available for remapping" ;
         return MB_SUCCESS;
     }
 
@@ -384,7 +385,7 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
         }
     }
 
-    std::cout.flush();
+    ;
 
     constexpr size_t max_neighbors = 1;
 #pragma omp parallel for shared(m_mesh_data, point_data, m_kdtree, m_config)
@@ -396,7 +397,7 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
         // ParallelPointCloudReader::CoordinateType nearest_point_dist_sq = nearest_point.second * nearest_point.second;
 
         if (elem_idx < 10) {
-            std::cout << "Nearest point for element " << elem_idx << " is " << nearest_point_idx << std::endl;
+            LOG(INFO) << "Nearest point for element " << elem_idx << " is " << nearest_point_idx ;
         }
         if (nearest_point_idx != static_cast<size_t>(-1)) {
             // Copy scalar values from nearest point to mesh element
@@ -406,7 +407,7 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
                     nearest_point_idx < var_it->second.size()) {
                     m_mesh_data.d_scalar_fields[var_name][elem_idx] = var_it->second[nearest_point_idx];
                     if (elem_idx < 10) {
-                        std::cout << "Double Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << var_it->second[nearest_point_idx] << std::endl;
+                        LOG(INFO) << "Double Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << var_it->second[nearest_point_idx] ;
                     }
                 }
                 else {
@@ -416,13 +417,13 @@ ErrorCode NearestNeighborRemapper::perform_remapping(const ParallelPointCloudRea
                         m_mesh_data.i_scalar_fields[var_name][elem_idx] = ivar_it->second[nearest_point_idx];
                     }
                     if (elem_idx < 10) {
-                        std::cout << "Integer Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << ivar_it->second[nearest_point_idx] << std::endl;
+                        LOG(INFO) << "Integer Data (" << var_name << ") at nearest neighbor element: " << nearest_point_idx << " is " << ivar_it->second[nearest_point_idx] ;
                     }
                 }
             }
         }
         else {
-            std::cout << "No nearest point found for element " << elem_idx << std::endl;
+            LOG(INFO) << "No nearest point found for element " << elem_idx ;
         }
     }
 
@@ -539,7 +540,7 @@ std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateTy
             return ret_matches;
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error in KD-tree search: " << e.what() << std::endl;
+        std::cerr << "Error in KD-tree search: " << e.what() ;
         ret_matches.push_back(nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>(static_cast<size_t>(-1), 0.0));
         return ret_matches;
     }
@@ -558,7 +559,7 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
         case NEAREST_NEIGHBOR:
             return std::unique_ptr<ScalarRemapper>(new NearestNeighborRemapper(interface, mesh_set));
         default:
-            std::cerr << "Unknown remapping method" << std::endl;
+            std::cerr << "Unknown remapping method" ;
             return std::unique_ptr<ScalarRemapper>();
     }
 }
@@ -868,7 +869,7 @@ PCSpectralProjectionRemapper::PCSpectralProjectionRemapper(Interface* interface,
 
 ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
     if (point_data.size() == 0) {
-        std::cout << "No point cloud data available for remapping" << std::endl;
+        LOG(INFO) << "No point cloud data available for remapping" ;
         return MB_SUCCESS;
     }
 
@@ -886,10 +887,11 @@ ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointClo
         }
     }
 
-    std::cout.flush();
+    ;
 
-    std::cout << "Starting PC averaged spectral projection with " << point_data.lonlat_coordinates.size()
-              << " point cloud points and spectral order " << m_config.spectral_order << std::endl;
+    LOG(INFO) << "";
+    LOG(INFO) << "Starting PC averaged spectral projection with " << point_data.lonlat_coordinates.size()
+              << " point cloud points and spectral order " << m_config.spectral_order ;
 
     // Project point cloud data to all spectral elements
     MB_CHK_ERR(project_point_cloud_to_spectral_elements(point_data));
@@ -906,12 +908,12 @@ ErrorCode PCSpectralProjectionRemapper::validate_quadrilateral_mesh() {
 
         if (nConnectivity != 4) {
             std::cerr << "Error: Spectral element projection requires quadrilateral mesh elements. "
-                      << "Found element with " << nConnectivity << " vertices." << std::endl;
+                      << "Found element with " << nConnectivity << " vertices." ;
             return MB_FAILURE;
         }
     }
 
-    std::cout << "Validated " << m_mesh_data.elements.size() << " quadrilateral elements for spectral projection" << std::endl;
+    LOG(INFO) << "Validated " << m_mesh_data.elements.size() << " quadrilateral elements for spectral projection" ;
 
     return MB_SUCCESS;
 }
@@ -919,12 +921,12 @@ ErrorCode PCSpectralProjectionRemapper::validate_quadrilateral_mesh() {
 ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements(
     const ParallelPointCloudReader::PointData& point_data) {
 
-    std::cout << "Performing spectral element projection with " << point_data.lonlat_coordinates.size()
-              << " point cloud points" << std::endl;
+    LOG(INFO) << "Performing spectral element projection with " << point_data.lonlat_coordinates.size()
+              << " point cloud points" ;
 
     const int nP = m_config.spectral_order;
 
-    std::cout << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" << std::endl;
+    LOG(INFO) << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" ;
 
     // Get GLL quadrature points and weights
     std::vector<double> dG, dW;
@@ -940,7 +942,8 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 #pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
         if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
-            std::cout << "Processing element " << elem_idx << " of " << m_mesh_data.elements.size() << std::endl;
+#pragma omp critical
+            LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(m_mesh_data.elements.size()) ;
         }
 
         ErrorCode rval;
@@ -1023,8 +1026,8 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
                 if (nearest_points.empty()) {
                     if (elem_idx < 10) {
                         #pragma omp critical
-                        std::cout << "WARNING: Element " << elem_idx << ", GLL node (" << i << "," << j
-                                  << ") has ZERO neighbors even after fallback!" << std::endl;
+                        LOG(WARNING) << "WARNING: Element " << elem_idx << ", GLL node (" << i << "," << j
+                                  << ") has ZERO neighbors even after fallback!" ;
                     }
                     continue; // Skip this GLL node
                 }
@@ -1135,23 +1138,23 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
     }
 
     if (error_count > 0) {
-        std::cout << "Warning: " << error_count << " elements failed processing out of "
-                  << m_mesh_data.elements.size() << " total elements" << std::endl;
+        LOG(ERROR) << "Warning: " << error_count << " elements failed processing out of "
+                  << m_mesh_data.elements.size() << " total elements" ;
     }
 
-    // Thread-safe debugging output after parallel region
+    // Thread-safe debugging output
     for (const auto& var_name : m_config.scalar_var_names) {
-            std::cout << "Sample values for " << var_name << ": ";
+            std::array<double, 5> values;
             for (size_t i = 0; i < std::min(size_t(5), m_mesh_data.elements.size()); ++i) {
                 auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
                 auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
                 if (d_it != m_mesh_data.d_scalar_fields.end()) {
-                    std::cout << d_it->second[i] << " ";
+                    values[i] = d_it->second[i];
                 } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
-                    std::cout << i_it->second[i] << " ";
+                    values[i] = i_it->second[i];
                 }
             }
-            std::cout << std::endl;
+            VLOG(2) << "Sample values for " << var_name << ": " << values;
     }
 
     return MB_SUCCESS;
@@ -1288,7 +1291,7 @@ moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >& dataGL
                 // The radius for the search is the sqrt of the Jacobian
                 const double radius = std::sqrt( dataGLLJacobian[p][q][ixOutput] );
 
-                std::cout << "Searching elements within radius " << radius
+                LOG(INFO) << "Searching elements within radius " << radius
                           << " for query point: " << query[0] << ", " << query[1] << ", " << query[2] << "\n";
                 // Now let us search for the nearest elements within search radius
                 auto results = radius_search_kdtree( tree, cloud, query, radius );
@@ -1309,9 +1312,9 @@ moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >& dataGL
 
                 for( auto ixFirstElement : results )
                 {
-                    std::cout << ixFirstElement << "\tFound " << nResults << " elements within radius " << radius
+                    LOG(INFO) << ixFirstElement << "\tFound " << nResults << " elements within radius " << radius
                                 << " for query point: " << query[0] << ", " << query[1] << ", " << query[2] << "\n";
-                    // std::cout << "\t[ " << ixOutputGlobal << "] Found association of point " << query[0] << ", "
+                    // LOG(INFO) << "\t[ " << ixOutputGlobal << "] Found association of point " << query[0] << ", "
                     //           << query[1] << ", " << query[2] << " to " << ixFirstElement << "\n";
                     if ( ixFirstElement < 0 || ixFirstElement >= source_vertices.size() )
                     {

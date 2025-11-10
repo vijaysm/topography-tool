@@ -1,3 +1,5 @@
+#include "easylogging.hpp"
+
 #include "RegularGridLocator.hpp"
 #include <cmath>
 #include <limits>
@@ -24,11 +26,11 @@ RegularGridLocator::RegularGridLocator(const std::vector<double>& lats,
     m_dlat = (m_nlat > 1) ? (m_lat_max - m_lat_min) / (m_nlat - 1) : 0.0;
     m_dlon = (m_nlon > 1) ? (m_lon_max - m_lon_min) / (m_nlon - 1) : 0.0;
 
-    std::cout << "RegularGridLocator initialized: " << m_nlat << " x " << m_nlon
+    LOG(INFO) << "RegularGridLocator initialized: " << m_nlat << " x " << m_nlon
               << " grid, lat[" << m_lat_min << ", " << m_lat_max << "] lon["
-              << m_lon_min << ", " << m_lon_max << "]" << std::endl;
-    std::cout << "  Average spacing: dlat=" << m_dlat << " dlon=" << m_dlon << std::endl;
-    std::cout << "  Distance metric: " << (m_metric == HAVERSINE ? "Haversine" : "Euclidean L2") << std::endl;
+              << m_lon_min << ", " << m_lon_max << "]";
+    LOG(INFO) << "  Average spacing: dlat=" << m_dlat << " dlon=" << m_dlon;
+    LOG(INFO) << "  Distance metric: " << (m_metric == HAVERSINE ? "Haversine" : "Euclidean L2");
 }
 
 double RegularGridLocator::normalize_longitude(double lon) const {

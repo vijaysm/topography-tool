@@ -1,5 +1,6 @@
 
 #include <mpi.h>
+#include "easylogging.hpp"
 #include "ParallelPointCloudReader.hpp"
 #include <iostream>
 #include <cmath>
@@ -38,13 +39,13 @@ ErrorCode ParallelPointCloudReader::initialize_netcdf() {
             m_ncfile = new PnetCDF::NcmpiFile(MPI_COMM_WORLD, m_config.netcdf_filename, PnetCDF::NcmpiFile::read);
         }
         catch (PnetCDF::exceptions::NcInvalidArg& e) {
-            std::cerr << "Error: Could not open NetCDF file with PnetCDF (invalid argument): "
-                      << m_config.netcdf_filename << std::endl;
+            LOG(ERROR) << "Error: Could not open NetCDF file with PnetCDF (invalid argument): "
+                      << m_config.netcdf_filename ;
             return MB_FAILURE;
         }
 
         if (!m_ncfile) {
-            std::cerr << "Error: Could not open NetCDF file: " << m_config.netcdf_filename << std::endl;
+            LOG(ERROR) << "Error: Could not open NetCDF file: " << m_config.netcdf_filename ;
             return MB_FAILURE;
         }
 
@@ -55,7 +56,7 @@ ErrorCode ParallelPointCloudReader::initialize_netcdf() {
         return moab::MB_SUCCESS;
 
     } catch (const std::exception& e) {
-        std::cerr << "An exception occurred during NetCDF initialization: " << e.what() << std::endl;
+        LOG(ERROR) << "An exception occurred during NetCDF initialization: " << e.what() ;
         return MB_FAILURE;
     }
 }
@@ -70,20 +71,20 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         for (const auto& var_pair : vars_map) {
             m_vars[var_pair.first] = var_pair.second;
         }
-        
+
         // Check if format detection should be bypassed
         if (m_config.bypass_format_detection) {
-            std::cout << "Format detection bypassed - using user-specified coordinate variables" << std::endl;
-            
+            LOG(INFO) << "Format detection bypassed - using user-specified coordinate variables" ;
+
             if (m_config.coord_var_names.size() < 2) {
-                std::cerr << "Error: Must specify at least 2 coordinate variables when bypassing format detection" << std::endl;
+                LOG(ERROR) << "Error: Must specify at least 2 coordinate variables when bypassing format detection" ;
                 return MB_FAILURE;
             }
-            
+
             lon_var_name = m_config.coord_var_names[0];
             lat_var_name = m_config.coord_var_names[1];
             m_is_usgs_format = false;  // Treat as unstructured
-            
+
             // Get total points from coordinate variable
             if (m_vars.count(lon_var_name)) {
                 PnetCDF::NcmpiVar coord_var = m_vars.at(lon_var_name);
@@ -91,7 +92,7 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 for (const auto& dim : coord_var.getDims()) {
                     m_total_points *= dim.getSize();
                 }
-                
+
                 // For 1D arrays, set nlons to total points
                 if (coord_var.getDimCount() == 1) {
                     nlats = 1;
@@ -101,15 +102,15 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                     nlons = coord_var.getDims()[1].getSize();
                 }
             }
-            
-            std::cout << "Using coordinate variables: " << lon_var_name << ", " << lat_var_name << std::endl;
-            std::cout << "Total points: " << m_total_points << std::endl;
-            
+
+            LOG(INFO) << "Using coordinate variables: " << lon_var_name << ", " << lat_var_name ;
+            LOG(INFO) << "Total points: " << m_total_points ;
+
             return MB_SUCCESS;
         }
-        
-        std::cout << "Detecting NetCDF format..." << std::endl;
-        std::cout << "NetCDF file has " << dims_map.size() << " dimensions and " << vars_map.size() << " variables" << std::endl;
+
+        LOG(INFO) << "Detecting NetCDF format..." ;
+        LOG(INFO) << "NetCDF file has " << dims_map.size() << " dimensions and " << vars_map.size() << " variables" ;
 
         // Check for USGS format: lat/lon dimensions and htopo variable
         bool has_lat = false, has_lon = false, has_htopo = false, has_fract = false;
@@ -139,14 +140,14 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         bool has_grid_center_lat = false;
         bool has_grid_center_lon = false;
         size_t grid_size_val = 0;
-        
+
         for (const auto& dim_pair : dims_map) {
             if (dim_pair.first == "grid_size") {
                 has_grid_size = true;
                 grid_size_val = dim_pair.second.getSize();
             }
         }
-        
+
         if (m_vars.count("grid_center_lat")) {
             has_grid_center_lat = true;
         }
@@ -157,19 +158,19 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         // Check for unstructured grid with lat/lon variables on grid_size
         bool has_lat_var_on_grid_size = false;
         bool has_lon_var_on_grid_size = false;
-        
+
         if (has_grid_size) {
             // Check if lat/lon are variables (not dimensions) with grid_size dimension
             if (m_vars.count("lat")) {
                 PnetCDF::NcmpiVar lat_var = m_vars.at("lat");
-                if (lat_var.getDimCount() == 1 && 
+                if (lat_var.getDimCount() == 1 &&
                     static_cast<size_t>(lat_var.getDims()[0].getSize()) == grid_size_val) {
                     has_lat_var_on_grid_size = true;
                 }
             }
             if (m_vars.count("lon")) {
                 PnetCDF::NcmpiVar lon_var = m_vars.at("lon");
-                if (lon_var.getDimCount() == 1 && 
+                if (lon_var.getDimCount() == 1 &&
                     static_cast<size_t>(lon_var.getDims()[0].getSize()) == grid_size_val) {
                     has_lon_var_on_grid_size = true;
                 }
@@ -179,17 +180,17 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         // SCRIP format detection (grid_center_lat/lon)
         if (has_grid_size && has_grid_center_lat && has_grid_center_lon) {
             m_is_usgs_format = false;  // SCRIP is unstructured
-            
+
             // Set coordinate variable names
             lon_var_name = "grid_center_lon";
             lat_var_name = "grid_center_lat";
             m_config.coord_var_names = {lon_var_name, lat_var_name};
-            
+
             // Grid size determines total points
             m_total_points = grid_size_val;
             nlats = 1;  // No tensor product structure
             nlons = grid_size_val;
-            
+
             // Automatically detect scalar variables (only if not already specified by user)
             if (m_config.scalar_var_names.empty()) {
                 std::vector<std::string> scalar_vars;
@@ -199,10 +200,10 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                     if (var_name != lon_var_name && var_name != lat_var_name &&
                         var_name != "grid_corner_lat" && var_name != "grid_corner_lon" &&
                         var_name != "grid_dims") {
-                        
+
                         // Check if it's a 1D variable with grid_size dimension
                         PnetCDF::NcmpiVar var = var_pair.second;
-                        if (var.getDimCount() == 1 && 
+                        if (var.getDimCount() == 1 &&
                             static_cast<size_t>(var.getDims()[0].getSize()) == grid_size_val) {
                             scalar_vars.push_back(var_name);
                         }
@@ -210,30 +211,29 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 }
                 m_config.scalar_var_names = scalar_vars;
             }
-            
-            std::cout << "Detected SCRIP format NetCDF file" << std::endl;
-            std::cout << "  Grid size: " << grid_size_val << " (unstructured)" << std::endl;
-            std::cout << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name << std::endl;
-            std::cout << "  Scalar variables: ";
+
+            LOG(INFO) << "Detected SCRIP format NetCDF file" ;
+            LOG(INFO) << "  Grid size: " << grid_size_val << " (unstructured)" ;
+            LOG(INFO) << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name ;
+            LOG(INFO) << "  Scalar variables: ";
             for (const auto& svar : m_config.scalar_var_names) {
-                std::cout << svar << " ";
+                LOG(INFO) << svar << " ";
             }
-            std::cout << std::endl;
         }
         // Unstructured grid with lat/lon variables on grid_size (e.g., cubed-sphere)
         else if (has_grid_size && has_lat_var_on_grid_size && has_lon_var_on_grid_size) {
             m_is_usgs_format = false;  // Unstructured
-            
+
             // Set coordinate variable names
             lon_var_name = "lon";
             lat_var_name = "lat";
             m_config.coord_var_names = {lon_var_name, lat_var_name};
-            
+
             // Grid size determines total points
             m_total_points = grid_size_val;
             nlats = 1;  // No tensor product structure
             nlons = grid_size_val;
-            
+
             // Automatically detect scalar variables (only if not already specified by user)
             if (m_config.scalar_var_names.empty()) {
                 std::vector<std::string> scalar_vars;
@@ -242,10 +242,10 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                     // Exclude coordinate variables and grid_dims
                     if (var_name != lon_var_name && var_name != lat_var_name &&
                         var_name != "grid_dims") {
-                        
+
                         // Check if it's a 1D variable with grid_size dimension
                         PnetCDF::NcmpiVar var = var_pair.second;
-                        if (var.getDimCount() == 1 && 
+                        if (var.getDimCount() == 1 &&
                             static_cast<size_t>(var.getDims()[0].getSize()) == grid_size_val) {
                             scalar_vars.push_back(var_name);
                         }
@@ -253,15 +253,14 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 }
                 m_config.scalar_var_names = scalar_vars;
             }
-            
-            std::cout << "Detected unstructured grid format (cubed-sphere/USGS-topo) NetCDF file" << std::endl;
-            std::cout << "  Grid size: " << grid_size_val << " (unstructured)" << std::endl;
-            std::cout << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name << std::endl;
-            std::cout << "  Scalar variables: ";
+
+            LOG(INFO) << "Detected unstructured grid format (cubed-sphere/USGS-topo) NetCDF file" ;
+            LOG(INFO) << "  Grid size: " << grid_size_val << " (unstructured)" ;
+            LOG(INFO) << "  Coordinate variables: " << lon_var_name << ", " << lat_var_name ;
+            LOG(INFO) << "  Scalar variables: ";
             for (const auto& svar : m_config.scalar_var_names) {
-                std::cout << svar << " ";
+                LOG(INFO) << svar << " ";
             }
-            std::cout << std::endl;
         }
         else if (has_lat && has_lon && has_htopo) {
             m_is_usgs_format = true;
@@ -275,7 +274,7 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
             // Set up configuration
             m_config.coord_var_names = {lon_var_name, lat_var_name};
-            
+
             // Only set scalar vars if not already specified by user
             if (m_config.scalar_var_names.empty()) {
                 if (has_fract) {
@@ -285,15 +284,15 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 }
             }
 
-            std::cout << "Detected USGS format NetCDF file" << std::endl;
-            std::cout << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), "
-                      << lon_var_name << " (" << nlons << ")" << std::endl;
-            std::cout << "  Topography variable: " << topo_var_name << std::endl;
+            LOG(INFO) << "Detected USGS format NetCDF file" ;
+            LOG(INFO) << "  Coordinate dimensions: " << lat_var_name << " (" << nlats << "), "
+                      << lon_var_name << " (" << nlons << ")" ;
+            LOG(INFO) << "  Topography variable: " << topo_var_name ;
             if (has_fract) {
-                std::cout << "  Land fraction variable: " << fract_var_name << std::endl;
+                LOG(INFO) << "  Land fraction variable: " << fract_var_name ;
             }
         } else {
-            std::cout << "Not USGS format, detecting coordinate variables..." << std::endl;
+            LOG(INFO) << "Not USGS format, detecting coordinate variables..." ;
 
             std::vector<std::string> lon_names = {"xc", "lon", "longitude", "x"};
             std::vector<std::string> lat_names = {"yc", "lat", "latitude", "y"};
@@ -335,12 +334,12 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                 }
 
             } else {
-                std::cerr << "Error: Could not find coordinate variables in NetCDF file" << std::endl;
+                LOG(ERROR) << "Error: Could not find coordinate variables in NetCDF file" ;
                 return MB_FAILURE;
             }
         }
 
-        std::cout << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" << std::endl;
+        LOG(INFO) << "Detected coordinate variables: " << lon_var_name << "(" << nlons << "), " << lat_var_name << "(" << nlats << ")" ;
 
         // Validate that all requested scalar variables exist
         if (!m_config.scalar_var_names.empty()) {
@@ -350,27 +349,27 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
                     missing_vars.push_back(var_name);
                 }
             }
-            
+
             if (!missing_vars.empty()) {
-                std::cerr << "\nERROR: Requested variables not found in NetCDF file:" << std::endl;
+                LOG(ERROR) << "\nERROR: Requested variables not found in NetCDF file:" ;
                 for (const auto& var : missing_vars) {
-                    std::cerr << "  - '" << var << "'" << std::endl;
+                    LOG(ERROR) << "  - '" << var << "'" ;
                 }
-                std::cerr << "\nAvailable data variables in file: ";
+                LOG(ERROR) << "\nAvailable data variables in file: ";
                 for (const auto& v : m_vars) {
                     // Skip coordinate variables
                     if (v.first != lon_var_name && v.first != lat_var_name) {
-                        std::cerr << v.first << " ";
+                        LOG(ERROR) << v.first << " ";
                     }
                 }
-                std::cerr << "\n" << std::endl;
+                LOG(ERROR) << "\n" ;
                 return MB_FAILURE;
             }
         }
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "Error in detect_netcdf_format(): " << e.what() << std::endl;
+        LOG(ERROR) << "Error in detect_netcdf_format(): " << e.what() ;
         return MB_FAILURE;
     }
 }
@@ -419,14 +418,14 @@ ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(Boundi
     assert(lonlat_bbox.min_coords[0] >= 0.0);
     assert(lonlat_bbox.min_coords[1] >= -90.0);
     if(lonlat_bbox.max_coords[0] > 360.0)
-        std::cout << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" << std::endl;
+        LOG(INFO) << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" ;
     assert(lonlat_bbox.max_coords[0] <= 360.0);
     assert(lonlat_bbox.max_coords[1] <= 90.0);
 
     {
-        std::cout << "Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
+        LOG(INFO) << "Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
                   << ", " << lonlat_bbox.max_coords[0] << "] lat[" << lonlat_bbox.min_coords[1]
-                  << ", " << lonlat_bbox.max_coords[1] << "]" << std::endl;
+                  << ", " << lonlat_bbox.max_coords[1] << "]" ;
     }
 
     return MB_SUCCESS;
@@ -446,9 +445,9 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
         int x_ndims = x_var.getDimCount();
         int y_ndims = y_var.getDimCount();
 
-        std::cout << "Coordinate variables: " << m_config.coord_var_names[0]
+        LOG(INFO) << "Coordinate variables: " << m_config.coord_var_names[0]
                   << " (dims=" << x_ndims << "), " << m_config.coord_var_names[1]
-                  << " (dims=" << y_ndims << ")" << std::endl;
+                  << " (dims=" << y_ndims << ")" ;
 
         std::vector<MPI_Offset> start, read_count;
 
@@ -465,7 +464,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                 assert( nlats - lat_dim.getSize() == 0);
                 assert( nlons - lon_dim.getSize() == 0);
 
-                std::cout << "USGS coordinate grid: " << nlats << " lat x " << nlons << " lon" << std::endl;
+                LOG(INFO) << "USGS coordinate grid: " << nlats << " lat x " << nlons << " lon" ;
 
                 // Read entire coordinate arrays (they are 1D and relatively small)
                 std::vector<CoordinateType> lats(nlats), lons(nlons);
@@ -488,7 +487,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                     if (lat_idx < nlats && lon_idx < nlons) {
                         coords[i] = {lons[lon_idx], lats[lat_idx]};
                     } else {
-                        std::cout << "Error: Point " << global_idx << " is out of bounds" << std::endl;
+                        LOG(INFO) << "Error: Point " << global_idx << " is out of bounds" ;
                         coords[i] = {0.0, 0.0};  // Out of bounds
                     }
                 }
@@ -523,7 +522,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
             size_t dim0_size = x_dims[0].getSize();
             size_t dim1_size = x_dims[1].getSize();
 
-            std::cout << "2D coordinate arrays: " << dim0_size << " x " << dim1_size << std::endl;
+            LOG(INFO) << "2D coordinate arrays: " << dim0_size << " x " << dim1_size ;
 
             // Read entire coordinate arrays for now (simpler approach)
             start = {0, 0};
@@ -544,8 +543,8 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
 
             return MB_SUCCESS;
         } else {
-            std::cerr << "Unsupported coordinate variable dimensions: "
-                      << x_ndims << ", " << y_ndims << std::endl;
+            LOG(ERROR) << "Unsupported coordinate variable dimensions: "
+                      << x_ndims << ", " << y_ndims ;
             return MB_FAILURE;
         }
 
@@ -560,7 +559,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
         return MB_SUCCESS;
 
     } catch (const std::exception& e) {
-        std::cerr << "Error reading coordinates: " << e.what() << std::endl;
+        LOG(ERROR) << "Error reading coordinates: " << e.what() ;
         return MB_FAILURE;
     }
 }
@@ -571,12 +570,11 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 
     auto var_it = m_vars.find(var_name);
     if (var_it == m_vars.end()) {
-        std::cerr << "ERROR: Variable '" << var_name << "' not found in NetCDF file!" << std::endl;
-        std::cerr << "Available variables: ";
+        LOG(ERROR) << "ERROR: Variable '" << var_name << "' not found in NetCDF file!" ;
+        LOG(ERROR) << "Available variables: ";
         for (const auto& v : m_vars) {
-            std::cerr << v.first << " ";
+            LOG(ERROR) << v.first << " ";
         }
-        std::cerr << std::endl;
         return MB_FAILURE;
     }
 
@@ -584,7 +582,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
         PnetCDF::NcmpiVar var = var_it->second;
         int ndims = var.getDimCount();
 
-        std::cout << "Reading scalar variable '" << var_name << "' with " << ndims << " dimensions" << std::endl;
+        LOG(INFO) << "Reading scalar variable '" << var_name << "' with " << ndims << " dimensions" ;
 
         std::vector<MPI_Offset> start, read_count;
 
@@ -614,7 +612,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                 temp_buffer.reserve(total_elements_to_read);
 
                 if (total_elements_to_read > MAX_ELEMENTS_PER_CHUNK) {
-                    std::cout << "Reading variable '" << var_name << "' in chunks to avoid overflow." << std::endl;
+                    LOG(INFO) << "Reading variable '" << var_name << "' in chunks to avoid overflow." ;
 
                     size_t lat_chunk_size = MAX_ELEMENTS_PER_CHUNK / nlons_count;
                     if (lat_chunk_size == 0) lat_chunk_size = 1; // Ensure progress
@@ -622,7 +620,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
                     for (size_t lat_offset = 0; lat_offset < nlats_count; lat_offset += lat_chunk_size) {
                         size_t current_lat_count = std::min(lat_chunk_size, nlats_count - lat_offset);
                         size_t chunk_elements = current_lat_count * nlons_count;
-                        std::cout << "\tReading latitude chunk from " << nlats_start + lat_offset << " to " << nlats_start + lat_offset + current_lat_count << "." << std::endl;
+                        LOG(INFO) << "\tReading latitude chunk from " << nlats_start + lat_offset << " to " << nlats_start + lat_offset + current_lat_count << "." ;
 
                         std::vector<T> chunk_buffer(chunk_elements);
                         start = {static_cast<MPI_Offset>(nlats_start + lat_offset), static_cast<MPI_Offset>(nlons_start)};
@@ -660,23 +658,24 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 
         } else if (ndims == 3) {
             // 3D variable - skip for now (likely vertex coordinates or time-dependent data)
-            std::cout << "WARNING:Skipping 3D variable '" << var_name << "' (not supported for scalar data)" << std::endl;
+            LOG(INFO) << "WARNING:Skipping 3D variable '" << var_name << "' (not supported for scalar data)" ;
             return MB_SUCCESS;
         } else {
-            std::cerr << "Unsupported variable dimensions: " << ndims << " for variable " << var_name << std::endl;
+            LOG(ERROR) << "Unsupported variable dimensions: " << ndims << " for variable " << var_name ;
             return MB_FAILURE;
         }
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "Error reading scalar variable '" << var_name << "': " << e.what() << std::endl;
+        LOG(ERROR) << "Error reading scalar variable '" << var_name << "': " << e.what() ;
         return MB_FAILURE;
     }
 }
 
 
 moab::ErrorCode moab::ParallelPointCloudReader::read_all_data(PointData& local_points) {
-    std::cout << "=== Starting data reading ===" << std::endl;
+    LOG(INFO) << "";
+    LOG(INFO) << "=== Starting data reading ===" ;
 
     nlats_start = 0;
     nlats_count = nlats;
@@ -688,8 +687,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_all_data(PointData& local_p
     const size_t my_count = nlons_count * nlats_count;
     const size_t my_start_idx = 0;
 
-    std::cout << "Reading ~" << points_per_rank << " points" << std::endl;
-    std::cout << "Total points: " << m_total_points << std::endl;
+    LOG(INFO) << "Reading ~" << points_per_rank << " points" ;
+    LOG(INFO) << "Total points: " << m_total_points ;
 
     // Step 2: Read my chunk of data
     MB_CHK_ERR(read_local_chunk_distributed(my_start_idx, my_count, local_points));
@@ -735,9 +734,9 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
             // Mark as structured grid - coordinates will be computed on-the-fly
             chunk_data.is_structured_grid = true;
 
-            std::cout << "USGS format: Stored " << chunk_data.latitudes.size() << " latitudes and "
+            LOG(INFO) << "USGS format: Stored " << chunk_data.latitudes.size() << " latitudes and "
                       << chunk_data.longitudes.size() << " longitudes (total grid points: "
-                      << chunk_data.size() << ", computed on-the-fly)" << std::endl;
+                      << chunk_data.size() << ", computed on-the-fly)" ;
         } else {
             // Standard format: read coordinates directly into explicit storage
             MB_CHK_ERR(read_coordinates_chunk(start_idx, count, chunk_data.lonlat_coordinates));
@@ -757,9 +756,9 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
                 chunk_data.i_scalar_variables[var_name] = std::move(scalar_data);
 
                 if (chunk_data.i_scalar_variables[var_name].size() != chunk_data.size()) {
-                    std::cerr << "WARNING: Scalar variable '" << var_name << "' has a different size ("
+                    LOG(ERROR) << "WARNING: Scalar variable '" << var_name << "' has a different size ("
                             << chunk_data.i_scalar_variables[var_name].size() << ") than the total points ("
-                            << chunk_data.size() << "). Data may be misaligned." << std::endl;
+                            << chunk_data.size() << "). Data may be misaligned." ;
                 }
             } else {
                 std::vector<double> scalar_data;
@@ -771,9 +770,9 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
                 chunk_data.d_scalar_variables[var_name] = std::move(scalar_data);
 
                 if (chunk_data.d_scalar_variables[var_name].size() != chunk_data.size()) {
-                    std::cerr << "WARNING: Scalar variable '" << var_name << "' has a different size ("
+                    LOG(ERROR) << "WARNING: Scalar variable '" << var_name << "' has a different size ("
                             << chunk_data.d_scalar_variables[var_name].size() << ") than the total points ("
-                            << chunk_data.size() << "). Data may be misaligned." << std::endl;
+                            << chunk_data.size() << "). Data may be misaligned." ;
                 }
             }
         }
@@ -782,14 +781,14 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
         if (!m_config.area_var_name.empty()) {
             std::vector<double> area_data;
             MB_CHK_ERR(read_scalar_variable_chunk(m_config.area_var_name, start_idx, count, area_data));
-            
+
             if (!area_data.empty()) {
                 chunk_data.areas = std::move(area_data);
-                std::cout << "Read area variable '" << m_config.area_var_name << "' with " 
-                          << chunk_data.areas.size() << " values" << std::endl;
+                LOG(INFO) << "Read area variable '" << m_config.area_var_name << "' with "
+                          << chunk_data.areas.size() << " values" ;
             }
         }
-        
+
         // Compute squares for specified fields
         if (!m_config.square_field_names.empty()) {
             for (const auto& field_name : m_config.square_field_names) {
@@ -797,53 +796,52 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
                 if (chunk_data.d_scalar_variables.count(field_name)) {
                     const auto& field_data = chunk_data.d_scalar_variables[field_name];
                     std::vector<double> squared_data(field_data.size());
-                    
+
                     for (size_t i = 0; i < field_data.size(); ++i) {
                         squared_data[i] = field_data[i] * field_data[i];
                     }
-                    
+
                     std::string squared_name = field_name + "_squared";
                     chunk_data.d_scalar_variables[squared_name] = std::move(squared_data);
-                    std::cout << "Computed squared field: " << squared_name << std::endl;
+                    LOG(INFO) << "Computed squared field: " << squared_name ;
                 }
                 // Check if field exists in integer variables
                 else if (chunk_data.i_scalar_variables.count(field_name)) {
                     const auto& field_data = chunk_data.i_scalar_variables[field_name];
                     std::vector<int> squared_data(field_data.size());
-                    
+
                     for (size_t i = 0; i < field_data.size(); ++i) {
                         squared_data[i] = field_data[i] * field_data[i];
                     }
-                    
+
                     std::string squared_name = field_name + "_squared";
                     chunk_data.i_scalar_variables[squared_name] = std::move(squared_data);
-                    std::cout << "Computed squared field: " << squared_name << std::endl;
+                    LOG(INFO) << "Computed squared field: " << squared_name ;
                 }
                 else {
-                    std::cerr << "Warning: Field '" << field_name << "' not found for squaring" << std::endl;
+                    LOG(ERROR) << "Warning: Field '" << field_name << "' not found for squaring" ;
                 }
             }
         }
 
-        std::cout << "Read " << chunk_data.size()
+        LOG(INFO) << "Read " << chunk_data.size()
                   << " points with " << chunk_data.d_scalar_variables.size() << " double scalar variables";
         if (!chunk_data.i_scalar_variables.empty()) {
-            std::cout << " and " << chunk_data.i_scalar_variables.size() << " integer scalar variables";
+            LOG(INFO) << " and " << chunk_data.i_scalar_variables.size() << " integer scalar variables";
         }
         if (!chunk_data.areas.empty()) {
-            std::cout << " and area data";
+            LOG(INFO) << " and area data";
         }
-        std::cout << std::endl;
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "Error in read_local_chunk_distributed: " << e.what() << std::endl;
+        LOG(ERROR) << "Error in read_local_chunk_distributed: " << e.what() ;
         return MB_FAILURE;
     }
 }
 
 moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
-    std::cout << "Starting point cloud reading..." << std::endl;
+    LOG(INFO) << "Starting point cloud reading..." ;
 
     // Initialize NetCDF file
     MB_CHK_ERR(initialize_netcdf());
