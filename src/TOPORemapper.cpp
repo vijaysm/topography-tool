@@ -353,10 +353,11 @@ int main(int argc, char* argv[]) {
                     NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
 
                     // Compute number of elements
-                    NcmpiDim ncol = out.getDim("ncol");
-                    const MPI_Offset nelems = ncol.getSize();
+                    std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
+                    NcmpiDim ncolDim = out.getDim(dofstr);
+                    const MPI_Offset nelems = ncolDim.getSize();
                     std::vector<NcmpiDim> dimid;
-                    dimid.push_back(ncol);
+                    dimid.push_back(ncolDim);
 
                     // ---- Add new variables that we have already remapped  ----
                     // first: scalar topography field per vertex
