@@ -84,6 +84,7 @@ int main(int argc, char* argv[]) {
         std::string output_file = "";
 
         // Optional variable name overrides
+        std::string dof_var = "";
         std::string lon_var = "";
         std::string lat_var = "";
         std::string area_var = "";
@@ -99,13 +100,15 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("target,t", "Target mesh file (H5M)", &target_file);
         opts.addOpt<std::string>("output,o", "Output mesh file with remapped data", &output_file);
 
-        opts.addOpt<std::string>("lon-var,", "Longitude variable name (bypasses format detection)", &lon_var);
-        opts.addOpt<std::string>("lat-var,", "Latitude variable name (bypasses format detection)", &lat_var);
-        opts.addOpt<std::string>("area-var,", "Area variable name to read and store", &area_var);
+        opts.addOpt<std::string>("dof-var,", "DoF numbering variable name (bypasses format detection). Default: ncol", &dof_var);
+        opts.addOpt<std::string>("lon-var,", "Longitude variable name (bypasses format detection). Default: lon", &lon_var);
+        opts.addOpt<std::string>("lat-var,", "Latitude variable name (bypasses format detection). Default: lat", &lat_var);
+        opts.addOpt<std::string>("area-var,", "Area variable name to read and store. Default: area", &area_var);
+
         opts.addOpt<std::string>("fields", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
         opts.addOpt<std::string>("square-fields", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
-
         opts.addOpt<std::string>("remap-method", "Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)", &remap_method);
+
         opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh", &spectral_target);
         opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps", &verbose);
 
@@ -176,7 +179,6 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-
         std::vector<EntityHandle> entities;
         if (spectral_target) {
             // Always use parallel options
@@ -199,15 +201,19 @@ int main(int argc, char* argv[]) {
                 NcmpiFile nc(MPI_COMM_WORLD, target_file.c_str(), NcmpiFile::read);
 
                 // Dimension
-                NcmpiDim ncolDim = nc.getDim("ncol");
+                std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
+                NcmpiDim ncolDim = nc.getDim(dofstr);
                 MPI_Offset ncol = ncolDim.getSize();
 
                 std::vector<double> lat(ncol), lon(ncol), area(ncol);
 
+                std::string latstr = lat_var.empty() ? "lat" : lat_var;
+                std::string lonstr = lon_var.empty() ? "lon" : lon_var;
+                std::string areastr = area_var.empty() ? "area" : area_var;
                 // Variables
-                NcmpiVar latVar  = nc.getVar("lat");
-                NcmpiVar lonVar  = nc.getVar("lon");
-                NcmpiVar areaVar = nc.getVar("area");
+                NcmpiVar latVar  = nc.getVar(latstr);
+                NcmpiVar lonVar  = nc.getVar(lonstr);
+                NcmpiVar areaVar = nc.getVar(areastr);
 
                 // Reads (collective)
                 latVar.getVar_all(lat.data());
@@ -258,19 +264,11 @@ int main(int argc, char* argv[]) {
         config.verbose = true;
 
         // Apply coordinate variable overrides (bypasses format detection)
-        if (!lon_var.empty() && !lat_var.empty()) {
-            config.coord_var_names = {lon_var, lat_var};
-            config.bypass_format_detection = true;
-        }
+        config.coord_var_names = {"lon", "lat"};
 
         // Apply field name overrides (replaces auto-detection)
         if (!fields_str.empty()) {
             config.scalar_var_names = parse_comma_separated(fields_str);
-        }
-
-        // Store area variable name if specified
-        if (!area_var.empty()) {
-            config.area_var_name = area_var;
         }
 
         // Store square fields list

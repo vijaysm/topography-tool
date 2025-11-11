@@ -73,7 +73,7 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         }
 
         // Check if format detection should be bypassed
-        if (m_config.bypass_format_detection) {
+        if (false) { // m_config.bypass_format_detection
             LOG(INFO) << "Format detection bypassed - using user-specified coordinate variables" ;
 
             if (m_config.coord_var_names.size() < 2) {
@@ -115,12 +115,12 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
         // Check for USGS format: lat/lon dimensions and htopo variable
         bool has_lat = false, has_lon = false, has_htopo = false, has_fract = false;
         for (const auto& dim_pair : dims_map) {
-            if (!dim_pair.first.compare("lat") || !dim_pair.first.compare("latitude"))
+            if (!dim_pair.first.compare("lat") || !dim_pair.first.compare("latitude") )
             {
               has_lat = true;
               lat_var_name = !dim_pair.first.compare("lat")  ? "lat" : "latitude";
             }
-            else if (!dim_pair.first.compare("lon") || !dim_pair.first.compare("longitude"))
+            else if (!dim_pair.first.compare("lon") || !dim_pair.first.compare("longitude") )
             {
               has_lon = true;
               lon_var_name = !dim_pair.first.compare("lon")  ? "lon" : "longitude";
@@ -774,18 +774,6 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(siz
                             << chunk_data.d_scalar_variables[var_name].size() << ") than the total points ("
                             << chunk_data.size() << "). Data may be misaligned." ;
                 }
-            }
-        }
-
-        // Read area variable if specified
-        if (!m_config.area_var_name.empty()) {
-            std::vector<double> area_data;
-            MB_CHK_ERR(read_scalar_variable_chunk(m_config.area_var_name, start_idx, count, area_data));
-
-            if (!area_data.empty()) {
-                chunk_data.areas = std::move(area_data);
-                LOG(INFO) << "Read area variable '" << m_config.area_var_name << "' with "
-                          << chunk_data.areas.size() << " values" ;
             }
         }
 
