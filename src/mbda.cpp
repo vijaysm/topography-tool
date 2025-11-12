@@ -1,7 +1,8 @@
 // Suppress warnings from easylogging++ header
 #include "easylogging.hpp"
 
-// Initialize easylogging++ - MUST be in exactly one source file
+// Let us initialize easylogging++
+// Can be in exactly one source file only
 INITIALIZE_EASYLOGGINGPP
 
 #include "ParallelPointCloudReader.hpp"
@@ -52,7 +53,9 @@ int get_num_threads(void) {
 
 
 /**
- * @brief TOPORemapper - Maps NetCDF point cloud data to mesh elements
+ * @brief mbda - Maps NetCDF point cloud data to target mesh elements based on
+ * the disk-based averaging algorithm that is guaranteed to be monotone.
+ *
  * NOTE: OpenMP parallelism is available - set OMP_NUM_THREADS environment variable
  */
 int main(int argc, char* argv[]) {
@@ -92,25 +95,25 @@ int main(int argc, char* argv[]) {
         std::string square_fields_str = "";
 
         // Remapping options
-        std::string remap_method = "PC_SPECTRAL";
+        std::string remap_method = "ALG_DISKAVERAGE";
         bool verbose = false;
         bool spectral_target = false;
 
-        opts.addOpt<std::string>("source,s", "Source NetCDF point cloud file", &source_file);
-        opts.addOpt<std::string>("target,t", "Target mesh file (H5M)", &target_file);
-        opts.addOpt<std::string>("output,o", "Output mesh file with remapped data", &output_file);
+        opts.addOpt<std::string>("source", "Source NetCDF point cloud file", &source_file);
+        opts.addOpt<std::string>("target", "Target mesh file (H5M)", &target_file);
+        opts.addOpt<std::string>("output", "Output mesh file with remapped data", &output_file);
 
-        opts.addOpt<std::string>("dof-var,", "DoF numbering variable name (bypasses format detection). Default: ncol", &dof_var);
-        opts.addOpt<std::string>("lon-var,", "Longitude variable name (bypasses format detection). Default: lon", &lon_var);
-        opts.addOpt<std::string>("lat-var,", "Latitude variable name (bypasses format detection). Default: lat", &lat_var);
-        opts.addOpt<std::string>("area-var,", "Area variable name to read and store. Default: area", &area_var);
+        opts.addOpt<std::string>("dof-var", "DoF numbering variable name (bypasses format detection). Default: ncol", &dof_var);
+        opts.addOpt<std::string>("lon-var", "Longitude variable name (bypasses format detection). Default: lon", &lon_var);
+        opts.addOpt<std::string>("lat-var", "Latitude variable name (bypasses format detection). Default: lat", &lat_var);
+        opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_var);
 
         opts.addOpt<std::string>("fields", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
         opts.addOpt<std::string>("square-fields", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
-        opts.addOpt<std::string>("remap-method", "Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)", &remap_method);
+        opts.addOpt<std::string>("remap-method", "Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). Default: da", &remap_method);
 
-        opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh", &spectral_target);
-        opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps", &verbose);
+        opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh. Default: false", &spectral_target);
+        opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps. Default: false", &verbose);
 
         opts.parseCommandLine(argc, argv);
 
@@ -143,7 +146,7 @@ int main(int argc, char* argv[]) {
 
         if (rank == 0) {
             LOG(INFO) << "==================================";
-            LOG(INFO) << "=== TOPORemapper Configuration ===";
+            LOG(INFO) << "=== mbda: Configuration ===";
             LOG(INFO) << "Source file: " << source_file;
             LOG(INFO) << "Target file: " << target_file;
             if (!output_file.empty()) {
@@ -261,7 +264,7 @@ int main(int argc, char* argv[]) {
         ParallelPointCloudReader::ReadConfig config;
         config.netcdf_filename = source_file;
         config.print_statistics = true;
-        config.verbose = true;
+        config.verbose = verbose;
 
         // Apply coordinate variable overrides (bypasses format detection)
         config.coord_var_names = {"lon", "lat"};
@@ -285,8 +288,7 @@ int main(int argc, char* argv[]) {
         MB_CHK_SET_ERR( reader.read_points(local_points), "Failed to read points");
 
         if (reader.get_config().print_statistics) {
-            auto read_time = std::chrono::high_resolution_clock::now();
-            auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(read_time - start_time);
+            auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
 
             if (rank == 0) {
                 LOG(INFO) << "===================================";
@@ -305,9 +307,9 @@ int main(int argc, char* argv[]) {
             }
 
             // Determine remapping method
-            RemapperFactory::RemapMethod method = RemapperFactory::PC_AVERAGED_SPECTRAL_PROJECTION;
+            RemapperFactory::RemapMethod method = RemapperFactory::ALG_DISKAVERAGE;
             if (remap_method == "NEAREST_NEIGHBOR" || remap_method == "NN") {
-                method = RemapperFactory::NEAREST_NEIGHBOR;
+                method = RemapperFactory::ALG_NEAREST_NEIGHBOR;
             }
 
             auto remapper = RemapperFactory::create_remapper(method, mb, mesh_set);
@@ -335,94 +337,102 @@ int main(int argc, char* argv[]) {
 
                 if (rank == 0) {
                     LOG(INFO) << "Successfully created remapped tags on mesh elements";
+                    LOG(INFO) << "";
                 }
 
-                bool write_nc_file = false;
-                std::filesystem::path filePath = output_file;
-                if (!spectral_target && filePath.extension() != ".h5m") {
-                    write_nc_file = true;
-                }
-
-                if (write_nc_file) {
-
-                    // Copy target file to output file so that we can append the new variables
-                    // without modifying anything existing in the target file
-                    std::filesystem::copy_file(target_file, output_file, std::filesystem::copy_options::overwrite_existing);
-
-                    // Create output file
-                    NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
-
-                    // Compute number of elements
-                    std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
-                    NcmpiDim ncolDim = out.getDim(dofstr);
-                    const MPI_Offset nelems = ncolDim.getSize();
-                    std::vector<NcmpiDim> dimid;
-                    dimid.push_back(ncolDim);
-
-                    // ---- Add new variables that we have already remapped  ----
-                    // first: scalar topography field per vertex
-                    // out.addVar("topography", ncmpiDouble, dimid);
-                    if (!config.scalar_var_names.empty()) {
-                        for (const auto& field_name : config.scalar_var_names) {
-                            out.addVar(field_name, ncmpiDouble, dimid);
-                        }
-                    }
-                    if (!config.square_field_names.empty()) {
-                        for (const auto& field_name : config.square_field_names) {
-                            out.addVar(field_name + "_squared", ncmpiDouble, dimid);
-                        }
+                // now let us serialize the results to disk
+                {
+                    bool write_nc_file = false;
+                    std::filesystem::path filePath = output_file;
+                    if (!spectral_target && filePath.extension() != ".h5m") {
+                        write_nc_file = true;
                     }
 
-                    // End define mode
-                    out.enddef();
+                    start_time = std::chrono::high_resolution_clock::now();
+                    if (write_nc_file) {
 
-                    // ---- Write remapped data to new file ----
-                    if (!config.scalar_var_names.empty()) {
-                        for (const auto& field_name : config.scalar_var_names) {
-                            NcmpiVar var = out.getVar(field_name);
-                            Tag tag;
-                            const char* field_name_cstr = field_name.c_str();
-                            MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
-                            std::vector<int> values(nelems, 0); // set all to 1.0
-                            MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
+                        // Copy target file to output file so that we can append the new variables
+                        // without modifying anything existing in the target file
+                        std::filesystem::copy_file(target_file, output_file, std::filesystem::copy_options::overwrite_existing);
+
+                        // Create output file
+                        NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
+
+                        // Compute number of elements
+                        std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
+                        NcmpiDim ncolDim = out.getDim(dofstr);
+                        const MPI_Offset nelems = ncolDim.getSize();
+                        std::vector<NcmpiDim> dimid;
+                        dimid.push_back(ncolDim);
+
+                        // ---- Add new variables that we have already remapped  ----
+                        // first: scalar topography field per vertex
+                        // out.addVar("topography", ncmpiDouble, dimid);
+                        if (!config.scalar_var_names.empty()) {
+                            for (const auto& field_name : config.scalar_var_names) {
+                                out.addVar(field_name, ncmpiDouble, dimid);
+                            }
+                        }
+                        if (!config.square_field_names.empty()) {
+                            for (const auto& field_name : config.square_field_names) {
+                                out.addVar(field_name + "_squared", ncmpiDouble, dimid);
+                            }
+                        }
+
+                        // End define mode
+                        out.enddef();
+
+                        // ---- Write remapped data to new file ----
+                        if (!config.scalar_var_names.empty()) {
+                            for (const auto& field_name : config.scalar_var_names) {
+                                NcmpiVar var = out.getVar(field_name);
+                                Tag tag;
+                                const char* field_name_cstr = field_name.c_str();
+                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+                                std::vector<int> values(nelems, 0); // set all to 1.0
+                                MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
+                                        "Failed to write remapped mesh");
+                                std::vector<MPI_Offset> start(1), count(1);
+                                start[0] = 0;
+                                count[0] = nelems;
+                                var.putVar_all(start, count, values.data());
+                            }
+                        }
+                        if (!config.square_field_names.empty()) {
+                            for (const auto& field_name : config.square_field_names) {
+                                NcmpiVar var = out.getVar(field_name + "_squared");
+                                Tag tag;
+                                std::string field_name_squared = field_name + "_squared";
+                                const char* field_name_cstr = field_name_squared.c_str();
+                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+                                std::vector<int> values(nelems, 0); // set all to 1.0
+                                MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
+                                        "Failed to write remapped mesh");
+                                std::vector<MPI_Offset> start(1), count(1);
+                                start[0] = 0;
+                                count[0] = nelems;
+                                var.putVar_all(start, count, values.data());
+                            }
+                        }
+
+                        ncmpi_close(out.getId());
+                    }
+                    else {
+                        // Save mesh with remapped data
+                        std::string write_opts = "";
+                        if (size > 1) {
+                            write_opts = "PARALLEL=WRITE_PART";
+                        }
+                        MB_CHK_SET_ERR(mb->write_file(output_file.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1),
                                     "Failed to write remapped mesh");
-                            std::vector<MPI_Offset> start(1), count(1);
-                            start[0] = 0;
-                            count[0] = nelems;
-                            var.putVar_all(start, count, values.data());
-                        }
-                    }
-                    if (!config.square_field_names.empty()) {
-                        for (const auto& field_name : config.square_field_names) {
-                            NcmpiVar var = out.getVar(field_name + "_squared");
-                            Tag tag;
-                            std::string field_name_squared = field_name + "_squared";
-                            const char* field_name_cstr = field_name_squared.c_str();
-                            MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
-                            std::vector<int> values(nelems, 0); // set all to 1.0
-                            MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
-                                    "Failed to write remapped mesh");
-                            std::vector<MPI_Offset> start(1), count(1);
-                            start[0] = 0;
-                            count[0] = nelems;
-                            var.putVar_all(start, count, values.data());
-                        }
                     }
 
-                    ncmpi_close(out.getId());
-                }
-                else {
-                    // Save mesh with remapped data
-                    std::string write_opts = "";
-                    if (size > 1) {
-                        write_opts = "PARALLEL=WRITE_PART";
+                    if (rank == 0) {
+                        LOG(INFO) << "Saved mesh with remapped data to: " << output_file;
                     }
-                    MB_CHK_SET_ERR(mb->write_file(output_file.c_str(), nullptr, write_opts.c_str(), &mesh_set, 1),
-                                "Failed to write remapped mesh");
-                }
 
-                if (rank == 0) {
-                    LOG(INFO) << "Saved mesh with remapped data to: " << output_file;
+                    auto write_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
+                    LOG(INFO) << "Output written in " << write_time.count() / 1000.0 << " seconds" ;
                 }
             } else {
                 LOG(ERROR) << "Failed to create remapper";
@@ -432,8 +442,9 @@ int main(int argc, char* argv[]) {
         }
 
         if (rank == 0) {
-            LOG(INFO) << "";
-            LOG(INFO) << "TOPORemapper completed successfully!";
+            LOG(INFO) << "====================================";
+            LOG(INFO) << "=== mbda completed successfully! ===";
+            LOG(INFO) << "====================================";
         }
 
     } catch (const std::exception& e) {

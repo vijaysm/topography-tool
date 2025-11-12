@@ -153,9 +153,9 @@ protected:
  * onto spectral element meshes using GLL quadrature points and KD-tree spatial searches.
  * NOTE: OpenMP parallelization is already implemented in this class.
  */
-class PCSpectralProjectionRemapper : public ScalarRemapper {
+class PCDiskAveragedProjectionRemapper : public ScalarRemapper {
 public:
-    PCSpectralProjectionRemapper(Interface* interface, EntityHandle mesh_set);
+    PCDiskAveragedProjectionRemapper(Interface* interface, EntityHandle mesh_set);
 
 protected:
     ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) override;
@@ -179,8 +179,8 @@ private:
 class RemapperFactory {
 public:
     enum RemapMethod {
-        PC_AVERAGED_SPECTRAL_PROJECTION,  // Default: Point cloud to spectral element projection
-        NEAREST_NEIGHBOR
+        ALG_DISKAVERAGE,  // Default: Point cloud disk averaged projection
+        ALG_NEAREST_NEIGHBOR
     };
 
     static std::unique_ptr<ScalarRemapper> create_remapper(

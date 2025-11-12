@@ -559,9 +559,9 @@ std::unique_ptr<ScalarRemapper> RemapperFactory::create_remapper(
     EntityHandle mesh_set) {
 
     switch (method) {
-        case PC_AVERAGED_SPECTRAL_PROJECTION:
-            return std::unique_ptr<ScalarRemapper>(new PCSpectralProjectionRemapper(interface, mesh_set));
-        case NEAREST_NEIGHBOR:
+        case ALG_DISKAVERAGE:
+            return std::unique_ptr<ScalarRemapper>(new PCDiskAveragedProjectionRemapper(interface, mesh_set));
+        case ALG_NEAREST_NEIGHBOR:
             return std::unique_ptr<ScalarRemapper>(new NearestNeighborRemapper(interface, mesh_set));
         default:
             std::cerr << "Unknown remapping method" ;
@@ -871,12 +871,12 @@ std::vector< size_t > radius_search_kdtree( const MOABKDTree& tree,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// PCSpectralProjectionRemapper Implementation
-PCSpectralProjectionRemapper::PCSpectralProjectionRemapper(Interface* interface, EntityHandle mesh_set)
+// PCDiskAveragedProjectionRemapper Implementation
+PCDiskAveragedProjectionRemapper::PCDiskAveragedProjectionRemapper(Interface* interface, EntityHandle mesh_set)
     : ScalarRemapper(interface, mesh_set) {
 }
 
-ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
+ErrorCode PCDiskAveragedProjectionRemapper::perform_remapping(const ParallelPointCloudReader::PointData& point_data) {
     if (point_data.size() == 0) {
         LOG(INFO) << "No point cloud data available for remapping" ;
         return MB_SUCCESS;
@@ -914,7 +914,7 @@ ErrorCode PCSpectralProjectionRemapper::perform_remapping(const ParallelPointClo
     return MB_SUCCESS;
 }
 
-ErrorCode PCSpectralProjectionRemapper::validate_quadrilateral_mesh() {
+ErrorCode PCDiskAveragedProjectionRemapper::validate_quadrilateral_mesh() {
     // Check that all elements are quadrilaterals
     for (EntityHandle element : m_mesh_data.elements) {
         const EntityHandle* connectivity;
@@ -933,7 +933,7 @@ ErrorCode PCSpectralProjectionRemapper::validate_quadrilateral_mesh() {
     return MB_SUCCESS;
 }
 
-ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements(
+ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
     const ParallelPointCloudReader::PointData& point_data) {
 
     LOG(INFO) << "Performing spectral element projection with " << point_data.lonlat_coordinates.size()
@@ -1174,7 +1174,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_to_spectral_elements
 }
 
 
-ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
+ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
     const ParallelPointCloudReader::PointData& point_data) {
 
     LOG(INFO) << "Performing topography projection with area averaging using " << point_data.size()
@@ -1350,7 +1350,7 @@ ErrorCode PCSpectralProjectionRemapper::project_point_cloud_with_area_averaging(
 ///////////////////////////////////////////////////////////////////////////////
 
 // NOTE: This function is from TempestRemap and needs significant adaptation
-// The functionality is now implemented in PCSpectralProjectionRemapper class
+// The functionality is now implemented in PCDiskAveragedProjectionRemapper class
 /*
 moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >& dataGLLNodalArea )
 {
