@@ -100,19 +100,19 @@ int main(int argc, char* argv[]) {
         bool spectral_target = false;
 
         opts.addOpt<std::string>("source", "Source NetCDF point cloud file", &source_file);
-        opts.addOpt<std::string>("target", "Target mesh file (H5M)", &target_file);
-        opts.addOpt<std::string>("output", "Output mesh file with remapped data", &output_file);
+        opts.addOpt<std::string>("target", "Target mesh file (nc or H5M)", &target_file);
+        opts.addOpt<std::string>("output", "Output mesh file with remapped data (ending with nc or h5m)", &output_file);
 
         opts.addOpt<std::string>("dof-var", "DoF numbering variable name (bypasses format detection). Default: ncol", &dof_var);
         opts.addOpt<std::string>("lon-var", "Longitude variable name (bypasses format detection). Default: lon", &lon_var);
         opts.addOpt<std::string>("lat-var", "Latitude variable name (bypasses format detection). Default: lat", &lat_var);
         opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_var);
 
-        opts.addOpt<std::string>("fields", "Comma-separated field names to remap (replaces auto-detection)", &fields_str);
-        opts.addOpt<std::string>("square-fields", "Comma-separated fields to compute squares for (<field>_squared)", &square_fields_str);
+        opts.addOpt<std::string>("fields", "Comma-separated field names to remap", &fields_str);
+        opts.addOpt<std::string>("square-fields", "Comma-separated fields to remap squared fields (e.g., <field>_squared)", &square_fields_str);
         opts.addOpt<std::string>("remap-method", "Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). Default: da", &remap_method);
 
-        opts.addOpt<void>("spectral", "Assume that the target mesh is a spectral element mesh. Default: false", &spectral_target);
+        opts.addOpt<void>("spectral", "Assume that the target mesh requires online spectral element mesh treatment. Default: false", &spectral_target);
         opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps. Default: false", &verbose);
 
         opts.parseCommandLine(argc, argv);

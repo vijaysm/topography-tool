@@ -15,17 +15,17 @@ The expectation for **mbda** is that it will significantly improve the speed, me
 
 - `--help`: Show full help text
 - `--source <source_file>`: Source NetCDF point cloud file
-- `--target <target_file>`: Target mesh file (H5M)
-- `--output <output_file>`: Output mesh file with remapped data
+- `--target <target_file>`: Target mesh file (nc or H5M)
+- `--output <output_file>`: Output mesh file with remapped data (ending with nc or h5m)
 - `--dof-var <dof_var>`: DoF numbering variable name (bypasses format detection). *Default: ncol*
 - `--lon-var <lon_var>`: Longitude variable name (bypasses format detection). *Default: lon*
 - `--lat-var <lat_var>`: Latitude variable name (bypasses format detection). *Default: lat*
 - `--area-var <area_var>`: Area variable name to read and store. *Default: area*
-- `--fields <fields_str>`: Comma-separated field names to remap (replaces auto-detection)
-- `--square-fields <square_fields_str>`: Comma-separated fields to compute squares for (<field>_squared)
-- `--remap-method <remap_method>`: Remapping method: PC_SPECTRAL or NEAREST_NEIGHBOR (default: PC_SPECTRAL)
-- `--spectral`: Assume that the target mesh is a spectral element mesh
-- `--verbose,v`: Enable verbose output with timestamps
+- `--fields <fields_str>`: Comma-separated field names to remap
+- `--square-fields <square_fields_str>`: Comma-separated fields to remap squared fields (e.g., <field>_squared)
+- `--remap-method <remap_method>`: Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). *Default: da*
+- `--spectral`: Assume that the target mesh requires online spectral element mesh treatment. *Default: false*
+- `--verbose,v`: Enable verbose output with timestamps. *Default: false*
 
 ## Example
 
@@ -41,7 +41,7 @@ The tool also assumes that the target mesh is a spectral element mesh. If the ta
 
 ## Workflows
 
-For workflows given in https://e3sm.atlassian.net/wiki/spaces/DOC/pages/5251104838/Topography+tool+chain+-+description+and+upgrades+for+high-res
+All sample workflows and descriptions have been provided in detail in the [Topography tool chain](https://e3sm.atlassian.net/wiki/spaces/DOC/pages/5251104838/Topography+tool+chain+-+description+and+upgrades+for+high-res) page. We provide details on how to achieve viable solutions for each of the test cases.
 
 ### Test 1
 
