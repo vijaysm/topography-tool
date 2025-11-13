@@ -109,7 +109,7 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_var);
 
         opts.addOpt<std::string>("fields", "Comma-separated field names to remap", &fields_str);
-        opts.addOpt<std::string>("square-fields", "Comma-separated fields to remap squared fields (e.g., <field>_squared)", &square_fields_str);
+        opts.addOpt<std::string>("square-fields", "Comma-separated quadratic field names to remap (stored as: <field>_squared)", &square_fields_str);
         opts.addOpt<std::string>("remap-method", "Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). Default: da", &remap_method);
 
         opts.addOpt<void>("spectral", "Assume that the target mesh requires online spectral element mesh treatment. Default: false", &spectral_target);

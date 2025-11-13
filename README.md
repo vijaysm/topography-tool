@@ -1,9 +1,11 @@
 # mbda: MOAB remap tool using disk-based averaging algorithm
 
 
-The **mbda** tool is designed to efficiently support the generation of atmospheric topography for model grids at ultra-high resolutions, including sub-kilometer and 100-meter scales. It addresses the limitations of legacy serial tools by providing a parallelized, scalable solution capable of processing massive datasets (e.g., 250m DEMs with over 13 billion points). The tool implements a disk-based averaging (“cell_avg”) algorithm that computes true area averages for both mesh-based and point-cloud grids, ensuring accurate and monotonic downsampling without introducing artificial extrema. It offers flexible input and output options, supporting various file formats and coordinate conventions, and provides a user-friendly command-line interface for specifying variables, remapping options, and target grid characteristics. The **mbda** tool is validated through a comprehensive suite of tests covering all required remap operations, ensuring robust performance across a range of atmospheric modeling workflows.
+The **mbda** tool is designed to efficiently support the generation of atmospheric topography for model grids at ultra-high resolutions, including sub-kilometer and 100-meter scales. It addresses the limitations of legacy serial tools by providing a parallelized (OpenMP threads), scalable solution capable of processing massive datasets (e.g., 250m DEMs with over 14 billion points). The tool implements a disk-based averaging (“cell_avg”) algorithm that computes true area averages for both mesh-based and point-cloud grids, ensuring accurate and monotonic downsampling without introducing artificial extrema. It offers flexible input and output options, supporting various file formats and coordinate conventions, and provides a user-friendly command-line interface for specifying variables, remapping options, and target grid characteristics. The **mbda** tool is being validated through a comprehensive suite of tests covering a range of atmospheric modeling workflows.
 
 The expectation for **mbda** is that it will significantly improve the speed, memory efficiency, and accuracy of topography remapping compared to previous workflows, enabling practical use on modern high-resolution and RRM grids. By supporting disk averaging for point clouds and integrating seamlessly into the broader topography toolchain, **mbda** can eliminate the need for complex, multi-step legacy processes and provides a unified one-stop tool for both field and variance remapping. The tool is designed to be extensible for future requirements, with evolving documentation and example workflows to facilitate easy adoption.
+
+The motivation for the disk averaging algorithm in **mbda** is also to support other climate initial-condition workflows where conservation is not a hard constraint. By specifying appropriate "area" factors, the averaging procedure can yield smoother reconstructions of initial condition data from very high-resolution datasets with fast wall-clock times.
 
 ## Usage
 
@@ -15,22 +17,24 @@ The expectation for **mbda** is that it will significantly improve the speed, me
 
 - `--help`: Show full help text
 - `--source <source_file>`: Source NetCDF point cloud file
-- `--target <target_file>`: Target mesh file (nc or H5M)
+- `--target <target_file>`: Target mesh file (nc or h5m)
 - `--output <output_file>`: Output mesh file with remapped data (ending with nc or h5m)
 - `--dof-var <dof_var>`: DoF numbering variable name (bypasses format detection). *Default: ncol*
 - `--lon-var <lon_var>`: Longitude variable name (bypasses format detection). *Default: lon*
 - `--lat-var <lat_var>`: Latitude variable name (bypasses format detection). *Default: lat*
 - `--area-var <area_var>`: Area variable name to read and store. *Default: area*
 - `--fields <fields_str>`: Comma-separated field names to remap
-- `--square-fields <square_fields_str>`: Comma-separated fields to remap squared fields (e.g., <field>_squared)
+- `--square-fields <square_fields_str>`: Comma-separated quadratic field names to remap (e.g., stored as <field>_squared)
 - `--remap-method <remap_method>`: Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). *Default: da*
 - `--spectral`: Assume that the target mesh requires online spectral element mesh treatment. *Default: false*
 - `--verbose,v`: Enable verbose output with timestamps. *Default: false*
 
+NOTE: If target mesh file extension, and output data file extension need to match. i.e., if target is ne256np4.h5m, then the output file has to be ne256np4_remapped.h5m.
+
 ## Example
 
 ```bash
-./mbda -s /path/to/source.nc -t /path/to/target.h5m -o /path/to/output.h5m
+./mbda -s /path/to/source.nc -t /path/to/target.h5m -o /path/to/output.nc
 ```
 
 ## Notes
@@ -113,9 +117,13 @@ FVtoFV map:  TERR and TERR^2
 
 <u>**CURRENTLY UNSUPPORTED**:</u> This feature may require a refactor as we always explicitly load the target mesh. So if the target mesh is the massive RLL dataset, then the single node memory may not entirely suffice, or even index access into a `172800*86400*3=44B` double coordinate array in memory. It will require storing the target mesh as a logical tensor-product mesh as well, and hence requires some deeper changes.
 
+<u>**IDEA**:</u> One approach would be to check if the source and target mesh are the same, in which case, we can internally use the same mesh representation (or even same reference) underneath to iterate over the elements/vertices of the mesh. This would simplify the workflow and can reuse the efficient representation of the mesh with no extra cost.
+
+We would also need to add a new command line parameter here that takes constant area factor to be applied to every source point to compute the disk averaging. This way, one could compute the smoothing of the original source mesh, and also compute projections onto other FV grids above as well by ignoring/overriding the area parameter in the target mesh.
+
 ## License
 
-MIT License
+BSD 3-Clause License
 
 ## Author
 
