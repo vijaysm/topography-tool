@@ -24,12 +24,12 @@ The motivation for the disk averaging algorithm in **mbda** is also to support o
 - `--lat-var <lat_var>`: Latitude variable name (bypasses format detection). *Default: lat*
 - `--area-var <area_var>`: Area variable name to read and store. *Default: area*
 - `--fields <fields_str>`: Comma-separated field names to remap
-- `--square-fields <square_fields_str>`: Comma-separated quadratic field names to remap (e.g., stored as <field>_squared)
+- `--square-fields <square_fields_str>`: Comma-separated quadratic field names to remap (e.g., stored as `<field>_squared`)
 - `--remap-method <remap_method>`: Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). *Default: da*
 - `--spectral`: Assume that the target mesh requires online spectral element mesh treatment. *Default: false*
 - `--verbose,v`: Enable verbose output with timestamps. *Default: false*
 
-NOTE: If target mesh file extension, and output data file extension need to match. i.e., if target is ne256np4.h5m, then the output file has to be ne256np4_remapped.h5m.
+NOTE: If the target mesh file extension and output data file extension need to match. i.e., if target is ne256np4.h5m, then the output file has to be ne256np4_remapped.h5m.
 
 ## Example
 
@@ -39,13 +39,13 @@ NOTE: If target mesh file extension, and output data file extension need to matc
 
 ## Notes
 
-The tool can be used to remap a NetCDF point cloud data to a target mesh. The tool assumes that the target mesh file has dimensions of ncol (can be overridden by user with `--dof-var <ndofs>`). And the coordinates of the points of interest, typically GLL points are provided as `lon(dof_var)`, `lat(dof_var)`, where `lon_var` and `lat_var` names can be overridden by user with  area(ncol) variables available. If even one of these are missing, throw an error and exit. If all are present, load the file and add the loaded points to the mesh set.
+The tool can be used to remap a NetCDF point cloud data to a target mesh. The tool assumes that the target mesh file has dimensions of ncol (can be overridden by user with `--dof-var <ndofs>`). And the coordinates of the points of interest, typically GLL points, are provided as `lon(dof_var)`, `lat(dof_var)`, where `lon_var` and `lat_var` names can be overridden by the user with  area(ncol) variables available. If even one of these is missing, throw an error and exit. If all are present, load the file and add the loaded points to the mesh set.
 
 The tool also assumes that the target mesh is a spectral element mesh. If the target mesh is not a spectral element mesh, the tool will throw an error and exit.
 
 ## Workflows
 
-All sample workflows and descriptions have been provided in detail in the [Topography tool chain](https://e3sm.atlassian.net/wiki/spaces/DOC/pages/5251104838/Topography+tool+chain+-+description+and+upgrades+for+high-res) page. We provide details on how to achieve viable solutions for each of the test cases.
+All sample workflows and descriptions have been provided in detail in the [Topography tool chain](https://e3sm.atlassian.net/wiki/spaces/DOC/pages/5251104838/Topography+tool+chain+-+description+and+upgrades+for+high-res) page. We provide details on how to achieve viable solutions for these test cases.
 
 ### Test 1
 
@@ -82,12 +82,12 @@ With USGS source grid
 ./mbda --target grids/CA100mnp4_homme_latlon.nc --source grids/usgs-rawdata.nc --output remapped_data_da.nc --fields htopo --square-fields htopo
 ```
 
-OR alternatively, if you want the tool to generate the spectral GLL jacobians and weights, use
+Alternatively, if you want the tool to generate the spectral GLL Jacobians and weights, use
 ```bash
 ./mbda --target grids/CAne32x128_Altamont100m_v2_scrip.nc --source grids/usgs-rawdata.nc --output remapped_data_da.h5m --fields htopo --square-fields htopo  --spectral
 ```
 
-NOTE: The spectral option is only valid for SE grids (quads). The code still calculates the element averaged values on the SE coarse grid and this is not what you may want. Great for visualization however. And the output format is MOAB native h5m format as the target mesh was read in by MOAB as well (not custom reader). This helped in debugging the algorithm with domain files as targets to all other formats that MOAB natively supports already.
+NOTE: The spectral option is only valid for SE grids (quads). The code still calculates the element averaged values on the SE coarse grid and this is not what you may want. Great for visualization, however. And the output format is MOAB native h5m format as the target mesh was read in by MOAB as well (not a custom reader). This helped in debugging the algorithm with domain files as targets to all other formats that MOAB natively supports already.
 
 With GMTED source grid
 ```bash
@@ -103,7 +103,7 @@ FVtoFV map: SGH30, TERR and TERR^2
 - target grid:  CAne32x128_Altamont100m_v2pg2.scrip.nc  (pg2 grid)
     - Points and area given in variables: grid_center_lon, grid_center_lat, grid_area
 
-With USGS-topo-cube3000.nc source grid, we will now have to create a Kd-tree for point queries and can no longer use the fast point locator that we have been using with RLL grids. Hence, this workflow with have a O(nlog(n)) complexity. Here, we are going to project terr and SGH30 variables from USGS-topo-cube3000 grid to any target grid and also compute the projection of the terr^2 variable as well.
+With USGS-topo-cube3000.nc source grid, we will now have to create a Kd-tree for point queries and can no longer use the fast point locator that we have been using with RLL grids. Hence, this workflow with have a `O(nlog(n))` complexity. Here, we are going to project the `terr` and `SGH30` variables from USGS-topo-cube3000 grid to any target grid and also compute the projection of the terr^2 variable as well.
 ```bash
 ./mbda --target grids/ne256np4_latlon_c20190127.nc --source grids/USGS-topo-cube3000.nc  --output remapped_data_da.nc --fields terr,SGH30 --square-fields terr
 ```
@@ -112,14 +112,14 @@ With USGS-topo-cube3000.nc source grid, we will now have to create a Kd-tree for
 
 FVtoFV map:  TERR and TERR^2
 - map fields from GMTED2010_7.5_stitch_S5P_OPER_REF_DEM_15_NCL_24-3.r172800x86400.nc   to itself, using a 3.3km disk average.
-- could also map to some MOAB grid with a similar resolution - like a cubed-sphere grid with 250m resolution.  The would be a one time operation, generating TERR and TERR_3km
+- could also map to some MOAB grid with a similar resolution - like a cubed-sphere grid with 250m resolution.  This would be a one-time operation, generating TERR and TERR_3km
 - if we can get this to work, then we can use the 3.3km smoothed data on the GMTED2010 grid, and we would no longer need the cube3000 grid.
 
 <u>**CURRENTLY UNSUPPORTED**:</u> This feature may require a refactor as we always explicitly load the target mesh. So if the target mesh is the massive RLL dataset, then the single node memory may not entirely suffice, or even index access into a `172800*86400*3=44B` double coordinate array in memory. It will require storing the target mesh as a logical tensor-product mesh as well, and hence requires some deeper changes.
 
-<u>**IDEA**:</u> One approach would be to check if the source and target mesh are the same, in which case, we can internally use the same mesh representation (or even same reference) underneath to iterate over the elements/vertices of the mesh. This would simplify the workflow and can reuse the efficient representation of the mesh with no extra cost.
+<u>**IDEA**:</u> One approach would be to check if the source and target mesh are the same, in which case, we can internally use the same mesh representation (or even the same reference) underneath to iterate over the elements/vertices of the mesh. This would simplify the workflow and can reuse the efficient representation of the mesh with no extra cost.
 
-We would also need to add a new command line parameter here that takes constant area factor to be applied to every source point to compute the disk averaging. This way, one could compute the smoothing of the original source mesh, and also compute projections onto other FV grids above as well by ignoring/overriding the area parameter in the target mesh.
+We would also need to add a new command-line parameter here that takes a constant area factor to be applied to every source point to compute the disk averaging. This way, one could compute the smoothing of the source mesh, and also compute projections onto other FV grids above as well by ignoring/overriding the area parameter in the target mesh.
 
 ## License
 
