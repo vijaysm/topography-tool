@@ -295,7 +295,7 @@ int main(int argc, char* argv[]) {
                 LOG(INFO) << "=== Point Cloud Reading Results ===";
                 LOG(INFO) << "Total points in dataset: " << reader.get_point_count();
                 LOG(INFO) << "Points read: " << local_points.size();
-                LOG(INFO) << "Reading time: " << read_duration.count() << " ms";
+                LOG(INFO) << "Reading time: " << read_duration.count()/1000.0 << " seconds";
             }
         }
 
@@ -353,65 +353,98 @@ int main(int argc, char* argv[]) {
 
                         // Copy target file to output file so that we can append the new variables
                         // without modifying anything existing in the target file
+                        auto file_copy_time = std::chrono::high_resolution_clock::now();
                         std::filesystem::copy_file(target_file, output_file, std::filesystem::copy_options::overwrite_existing);
+                        auto file_copy_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - file_copy_time);
+                        if (verbose) {
+                            LOG(INFO) << "File copied in " << file_copy_duration.count() << " ms";
+                        }
 
                         // Create output file
+                        auto file_create_time = std::chrono::high_resolution_clock::now();
                         NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
 
+                        auto file_create_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - file_create_time);
+                        if (verbose) {
+                            LOG(INFO) << "File created in " << file_create_duration.count() << " ms";
+                        }
+
+                        auto dim_create_time = std::chrono::high_resolution_clock::now();
                         // Compute number of elements
                         std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
                         NcmpiDim ncolDim = out.getDim(dofstr);
                         const MPI_Offset nelems = ncolDim.getSize();
                         std::vector<NcmpiDim> dimid;
                         dimid.push_back(ncolDim);
+                        if (verbose) {
+                            LOG(INFO) << "Dim query in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - dim_create_time).count() << " ms";
+                        }
 
                         // ---- Add new variables that we have already remapped  ----
                         // first: scalar topography field per vertex
                         // out.addVar("topography", ncmpiDouble, dimid);
+                        auto var_create_time = std::chrono::high_resolution_clock::now();
                         if (!config.scalar_var_names.empty()) {
                             for (const auto& field_name : config.scalar_var_names) {
-                                out.addVar(field_name, ncmpiDouble, dimid);
+                                out.addVar(field_name, ncmpiFloat, dimid);
                             }
                         }
                         if (!config.square_field_names.empty()) {
                             for (const auto& field_name : config.square_field_names) {
-                                out.addVar(field_name + "_squared", ncmpiDouble, dimid);
+                                out.addVar(field_name + "_squared", ncmpiFloat, dimid);
                             }
+                        }
+                        if (verbose) {
+                            LOG(INFO) << "Var created in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_create_time).count() << " ms";
                         }
 
                         // End define mode
+                        auto end_def_time = std::chrono::high_resolution_clock::now();
                         out.enddef();
+                        if (verbose) {
+                            LOG(INFO) << "End define mode in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - end_def_time).count() << " ms";
+                        }
 
                         // ---- Write remapped data to new file ----
                         if (!config.scalar_var_names.empty()) {
                             for (const auto& field_name : config.scalar_var_names) {
-                                NcmpiVar var = out.getVar(field_name);
+                                auto var_write_time = std::chrono::high_resolution_clock::now();
+
+                                // get the data from MOAB first
                                 Tag tag;
-                                const char* field_name_cstr = field_name.c_str();
-                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name.c_str(), tag), "Failed to create tag");
                                 std::vector<int> values(nelems, 0); // set all to 1.0
                                 MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
                                         "Failed to write remapped mesh");
-                                std::vector<MPI_Offset> start(1), count(1);
-                                start[0] = 0;
-                                count[0] = nelems;
-                                var.putVar_all(start, count, values.data());
+
+                                // write to netcdf variable
+                                NcmpiVar var = out.getVar(field_name);
+                                var.putVar_all(values.data());
+                                auto var_write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_write_time);
+                                if (verbose) {
+                                    LOG(INFO) << "Variable " << field_name << " written in " << var_write_duration.count() << " ms";
+                                }
                             }
                         }
                         if (!config.square_field_names.empty()) {
                             for (const auto& field_name : config.square_field_names) {
-                                NcmpiVar var = out.getVar(field_name + "_squared");
-                                Tag tag;
+                                auto var_write_time = std::chrono::high_resolution_clock::now();
                                 std::string field_name_squared = field_name + "_squared";
-                                const char* field_name_cstr = field_name_squared.c_str();
-                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_cstr, tag), "Failed to create tag");
+
+                                // get the data from MOAB first
+                                Tag tag;
+                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_squared.c_str(), tag), "Failed to create tag");
                                 std::vector<int> values(nelems, 0); // set all to 1.0
                                 MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
                                         "Failed to write remapped mesh");
-                                std::vector<MPI_Offset> start(1), count(1);
-                                start[0] = 0;
-                                count[0] = nelems;
-                                var.putVar_all(start, count, values.data());
+
+                                // write to netcdf variable
+                                NcmpiVar var = out.getVar(field_name_squared);
+                                var.putVar_all(values.data());
+                                auto var_write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_write_time);
+                                if (verbose) {
+                                    LOG(INFO) << "Variable " << field_name_squared << " written in " << var_write_duration.count() << " ms";
+                                }
                             }
                         }
 

@@ -286,7 +286,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
 
             auto build_end = std::chrono::high_resolution_clock::now();
             auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
-            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" ;
+            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count() << " ms" ;
         } else {
             // Fallback: extract unique lat/lon values from point cloud (for non-USGS or legacy code)
             std::vector<double> lats, lons;
@@ -309,7 +309,7 @@ ErrorCode ScalarRemapper::build_grid_locator(const ParallelPointCloudReader::Poi
 
             auto build_end = std::chrono::high_resolution_clock::now();
             auto build_duration = std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_start);
-            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count()/1000.0 << " seconds" ;
+            LOG(INFO) << "RegularGridLocator build time: " << build_duration.count() << " ms" ;
         }
 
         return MB_SUCCESS;
@@ -364,7 +364,7 @@ ErrorCode ScalarRemapper::build_kdtree(const ParallelPointCloudReader::PointData
 
         auto redist_end = std::chrono::high_resolution_clock::now();
         auto redist_duration = std::chrono::duration_cast<std::chrono::milliseconds>(redist_end - redist_start);
-        LOG(INFO) << "KD-tree build time: " << redist_duration.count()/1000.0 << " seconds" ;
+        LOG(INFO) << "KD-tree build time: " << redist_duration.count() << " ms" ;
         LOG(INFO) << "Built KD-tree index for " << point_data.size() << " points" ;
 
         return MB_SUCCESS;
