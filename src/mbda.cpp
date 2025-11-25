@@ -7,7 +7,7 @@ INITIALIZE_EASYLOGGINGPP
 
 #include "ParallelPointCloudReader.hpp"
 #include "ScalarRemapper.hpp"
-#include "NetcdfMeshIO.hpp"
+#include "MeshIO.hpp"
 #include "moab/Core.hpp"
 #include "moab/ProgOptions.hpp"
 
@@ -91,8 +91,8 @@ int main(int argc, char* argv[]) {
         std::string lon_variable = "";
         std::string lat_variable = "";
         std::string area_variable = "";
-        std::string fields_str = "";
-        std::string square_fields_str = "";
+        std::string fields_string_list = "";
+        std::string square_fields_string_list = "";
 
         // Remapping options
         std::string remap_method = "ALG_DISKAVERAGE";
@@ -108,8 +108,8 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("lat-var", "Latitude variable name (bypasses format detection). Default: lat", &lat_variable);
         opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_variable);
 
-        opts.addOpt<std::string>("fields", "Comma-separated field names to remap", &fields_str);
-        opts.addOpt<std::string>("square-fields", "Comma-separated quadratic field names to remap (stored as: <field>_squared)", &square_fields_str);
+        opts.addOpt<std::string>("fields", "Comma-separated field names to remap", &fields_string_list);
+        opts.addOpt<std::string>("square-fields", "Comma-separated quadratic field names to remap (stored as: <field>_squared)", &square_fields_string_list);
         opts.addOpt<std::string>("remap-method", "Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). Default: da", &remap_method);
 
         opts.addOpt<void>("spectral", "Assume that the target mesh requires online spectral element mesh treatment. Default: false", &spectral_target);
@@ -158,11 +158,11 @@ int main(int argc, char* argv[]) {
             if (!area_variable.empty()) {
                 LOG(INFO) << "Area variable: " << area_variable;
             }
-            if (!fields_str.empty()) {
-                LOG(INFO) << "Field overrides: " << fields_str;
+            if (!fields_string_list.empty()) {
+                LOG(INFO) << "Field overrides: " << fields_string_list;
             }
-            if (!square_fields_str.empty()) {
-                LOG(INFO) << "Square fields: " << square_fields_str;
+            if (!square_fields_string_list.empty()) {
+                LOG(INFO) << "Square fields: " << square_fields_string_list;
             }
             LOG(INFO) << "Remap method: " << remap_method << " (" << (spectral_target ? "Spectral Target" : "Generic Target") << ")";
             LOG(INFO) << "Number of threads: " << get_num_threads();
@@ -221,13 +221,13 @@ int main(int argc, char* argv[]) {
         config.coord_var_names = {"lon", "lat"};
 
         // Apply field name overrides (replaces auto-detection)
-        if (!fields_str.empty()) {
-            config.scalar_var_names = parse_comma_separated(fields_str);
+        if (!fields_string_list.empty()) {
+            config.scalar_var_names = parse_comma_separated(fields_string_list);
         }
 
         // Store square fields list
-        if (!square_fields_str.empty()) {
-            config.square_field_names = parse_comma_separated(square_fields_str);
+        if (!square_fields_string_list.empty()) {
+            config.square_field_names = parse_comma_separated(square_fields_string_list);
         }
 
         reader.configure(config);
