@@ -7,6 +7,7 @@ INITIALIZE_EASYLOGGINGPP
 
 #include "ParallelPointCloudReader.hpp"
 #include "ScalarRemapper.hpp"
+#include "NetcdfMeshIO.hpp"
 #include "moab/Core.hpp"
 #include "moab/ProgOptions.hpp"
 
@@ -59,7 +60,6 @@ int get_num_threads(void) {
  * NOTE: OpenMP parallelism is available - set OMP_NUM_THREADS environment variable
  */
 int main(int argc, char* argv[]) {
-    using namespace PnetCDF;
 
     // Initialize MPI
     MPI_Init(&argc, &argv);
@@ -87,10 +87,10 @@ int main(int argc, char* argv[]) {
         std::string output_file = "";
 
         // Optional variable name overrides
-        std::string dof_var = "";
-        std::string lon_var = "";
-        std::string lat_var = "";
-        std::string area_var = "";
+        std::string dimension_variable = "";
+        std::string lon_variable = "";
+        std::string lat_variable = "";
+        std::string area_variable = "";
         std::string fields_str = "";
         std::string square_fields_str = "";
 
@@ -103,10 +103,10 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("target", "Target mesh file (nc or H5M)", &target_file);
         opts.addOpt<std::string>("output", "Output mesh file with remapped data (ending with nc or h5m)", &output_file);
 
-        opts.addOpt<std::string>("dof-var", "DoF numbering variable name (bypasses format detection). Default: ncol", &dof_var);
-        opts.addOpt<std::string>("lon-var", "Longitude variable name (bypasses format detection). Default: lon", &lon_var);
-        opts.addOpt<std::string>("lat-var", "Latitude variable name (bypasses format detection). Default: lat", &lat_var);
-        opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_var);
+        opts.addOpt<std::string>("dof-var", "DoF numbering variable name (bypasses format detection). Default: ncol", &dimension_variable);
+        opts.addOpt<std::string>("lon-var", "Longitude variable name (bypasses format detection). Default: lon", &lon_variable);
+        opts.addOpt<std::string>("lat-var", "Latitude variable name (bypasses format detection). Default: lat", &lat_variable);
+        opts.addOpt<std::string>("area-var", "Area variable name to read and store. Default: area", &area_variable);
 
         opts.addOpt<std::string>("fields", "Comma-separated field names to remap", &fields_str);
         opts.addOpt<std::string>("square-fields", "Comma-separated quadratic field names to remap (stored as: <field>_squared)", &square_fields_str);
@@ -152,11 +152,11 @@ int main(int argc, char* argv[]) {
             if (!output_file.empty()) {
                 LOG(INFO) << "Output file: " << output_file;
             }
-            if (!lon_var.empty() && !lat_var.empty()) {
-                LOG(INFO) << "Coordinate variable overrides: " << lon_var << ", " << lat_var;
+            if (!lon_variable.empty() && !lat_variable.empty()) {
+                LOG(INFO) << "Coordinate variable overrides: " << lon_variable << ", " << lat_variable;
             }
-            if (!area_var.empty()) {
-                LOG(INFO) << "Area variable: " << area_var;
+            if (!area_variable.empty()) {
+                LOG(INFO) << "Area variable: " << area_variable;
             }
             if (!fields_str.empty()) {
                 LOG(INFO) << "Field overrides: " << fields_str;
@@ -195,65 +195,16 @@ int main(int argc, char* argv[]) {
             MB_CHK_SET_ERR( mb->get_entities_by_dimension(mesh_set, 2, entities), "Failed to get elements by dimension");
 
         } else {
-            // Assume the netcdf file has dimensions of ncol, ncells, ncorners (but we only use ncol)
-            // And there are lon(ncol), lat(ncol), area(ncol) variables available.
-            // If even one of these are missing, throw an error and exit.
-            // If all are present, load the file and add the loaded points to the mesh set.
+            NetcdfLoadOptions load_opts;
+            load_opts.dimension_name = dimension_variable;
+            load_opts.lon_var_name   = lon_variable;
+            load_opts.lat_var_name   = lat_variable;
+            load_opts.area_var_name  = area_variable;
+            load_opts.context_label  = "source point-cloud mesh";
+            load_opts.verbose        = verbose && (rank == 0);
 
-            try {
-                NcmpiFile nc(MPI_COMM_WORLD, target_file.c_str(), NcmpiFile::read);
-
-                // Dimension
-                std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
-                NcmpiDim ncolDim = nc.getDim(dofstr);
-                MPI_Offset ncol = ncolDim.getSize();
-
-                std::vector<double> lat(ncol), lon(ncol), area(ncol);
-
-                std::string latstr = lat_var.empty() ? "lat" : lat_var;
-                std::string lonstr = lon_var.empty() ? "lon" : lon_var;
-                std::string areastr = area_var.empty() ? "area" : area_var;
-                // Variables
-                NcmpiVar latVar  = nc.getVar(latstr);
-                NcmpiVar lonVar  = nc.getVar(lonstr);
-                NcmpiVar areaVar = nc.getVar(areastr);
-
-                // Reads (collective)
-                latVar.getVar_all(lat.data());
-                lonVar.getVar_all(lon.data());
-                areaVar.getVar_all(area.data());
-
-                // Close file
-                ncmpi_close(nc.getId());
-
-                // Create area tag: the only one we really need for the algorithm
-                Tag area_tag;
-                MB_CHK_SET_ERR(mb->tag_get_handle("area", 1, MB_TYPE_DOUBLE, area_tag,
-                        MB_TAG_DENSE | MB_TAG_CREAT), "Failed to create area tag");
-
-                // Create vertices
-                entities.resize(ncol);
-                for (MPI_Offset index = 0; index < ncol; ++index) {
-
-                    // Convert to Cartesian (unit sphere)
-                    std::array<double, 3> coords;
-                    RLLtoXYZ_Deg(lon[index], lat[index], coords);
-
-                    MB_CHK_SET_ERR(mb->create_vertex(coords.data(), entities[index]), "Failed to create vertex");
-                }
-
-                // Set area tag for all vertices
-                MB_CHK_SET_ERR(mb->tag_set_data(area_tag, entities.data(), entities.size(), area.data()), "Failed to set area tag");
-
-                // Create meshset for vertices
-                MB_CHK_SET_ERR(mb->add_entities(mesh_set, entities.data(), entities.size()), "Failed to add vertices to set");
-
-            }
-            catch (exceptions::NcInvalidArg& e) {
-                LOG(ERROR) << "Error: Could not open NetCDF file: "
-                        << target_file << " and create a valid MOAB meshset.";
-                return MB_FAILURE;
-            }
+            MB_CHK_SET_ERR(NetcdfMeshIO::load_point_cloud_from_file(mb, mesh_set, target_file, load_opts, entities),
+                           "Failed to load NetCDF mesh file");
         }
         if (rank == 0) {
             LOG(INFO) << "Loaded target mesh: " << target_file;
@@ -350,105 +301,15 @@ int main(int argc, char* argv[]) {
 
                     start_time = std::chrono::high_resolution_clock::now();
                     if (write_nc_file) {
+                        NetcdfWriteRequest write_request;
+                        write_request.scalar_var_names = reader.get_config().scalar_var_names;
+                        write_request.squared_var_names = reader.get_config().square_field_names;
+                        write_request.dimension_name = dimension_variable;
+                        write_request.verbose = verbose && (rank == 0);
 
-                        // Copy target file to output file so that we can append the new variables
-                        // without modifying anything existing in the target file
-                        auto file_copy_time = std::chrono::high_resolution_clock::now();
-                        std::filesystem::copy_file(target_file, output_file, std::filesystem::copy_options::overwrite_existing);
-                        auto file_copy_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - file_copy_time);
-                        if (verbose) {
-                            LOG(INFO) << "File copied in " << file_copy_duration.count() << " ms";
-                        }
-
-                        // Create output file
-                        auto file_create_time = std::chrono::high_resolution_clock::now();
-                        NcmpiFile out(MPI_COMM_WORLD, output_file.c_str(), NcmpiFile::write);
-
-                        auto file_create_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - file_create_time);
-                        if (verbose) {
-                            LOG(INFO) << "File created in " << file_create_duration.count() << " ms";
-                        }
-
-                        auto dim_create_time = std::chrono::high_resolution_clock::now();
-                        // Compute number of elements
-                        std::string dofstr = dof_var.empty() ? "ncol" : dof_var;
-                        NcmpiDim ncolDim = out.getDim(dofstr);
-                        const MPI_Offset nelems = ncolDim.getSize();
-                        std::vector<NcmpiDim> dimid;
-                        dimid.push_back(ncolDim);
-                        if (verbose) {
-                            LOG(INFO) << "Dim query in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - dim_create_time).count() << " ms";
-                        }
-
-                        // ---- Add new variables that we have already remapped  ----
-                        // first: scalar topography field per vertex
-                        // out.addVar("topography", ncmpiDouble, dimid);
-                        auto var_create_time = std::chrono::high_resolution_clock::now();
-                        if (!config.scalar_var_names.empty()) {
-                            for (const auto& field_name : config.scalar_var_names) {
-                                out.addVar(field_name, ncmpiFloat, dimid);
-                            }
-                        }
-                        if (!config.square_field_names.empty()) {
-                            for (const auto& field_name : config.square_field_names) {
-                                out.addVar(field_name + "_squared", ncmpiFloat, dimid);
-                            }
-                        }
-                        if (verbose) {
-                            LOG(INFO) << "Var created in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_create_time).count() << " ms";
-                        }
-
-                        // End define mode
-                        auto end_def_time = std::chrono::high_resolution_clock::now();
-                        out.enddef();
-                        if (verbose) {
-                            LOG(INFO) << "End define mode in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - end_def_time).count() << " ms";
-                        }
-
-                        // ---- Write remapped data to new file ----
-                        if (!config.scalar_var_names.empty()) {
-                            for (const auto& field_name : config.scalar_var_names) {
-                                auto var_write_time = std::chrono::high_resolution_clock::now();
-
-                                // get the data from MOAB first
-                                Tag tag;
-                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name.c_str(), tag), "Failed to create tag");
-                                std::vector<int> values(nelems, 0); // set all to 1.0
-                                MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
-                                        "Failed to write remapped mesh");
-
-                                // write to netcdf variable
-                                NcmpiVar var = out.getVar(field_name);
-                                var.putVar_all(values.data());
-                                auto var_write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_write_time);
-                                if (verbose) {
-                                    LOG(INFO) << "Variable " << field_name << " written in " << var_write_duration.count() << " ms";
-                                }
-                            }
-                        }
-                        if (!config.square_field_names.empty()) {
-                            for (const auto& field_name : config.square_field_names) {
-                                auto var_write_time = std::chrono::high_resolution_clock::now();
-                                std::string field_name_squared = field_name + "_squared";
-
-                                // get the data from MOAB first
-                                Tag tag;
-                                MB_CHK_SET_ERR(mb->tag_get_handle(field_name_squared.c_str(), tag), "Failed to create tag");
-                                std::vector<int> values(nelems, 0); // set all to 1.0
-                                MB_CHK_SET_ERR(mb->tag_get_data(tag, entities.data(), entities.size(), values.data()),
-                                        "Failed to write remapped mesh");
-
-                                // write to netcdf variable
-                                NcmpiVar var = out.getVar(field_name_squared);
-                                var.putVar_all(values.data());
-                                auto var_write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - var_write_time);
-                                if (verbose) {
-                                    LOG(INFO) << "Variable " << field_name_squared << " written in " << var_write_duration.count() << " ms";
-                                }
-                            }
-                        }
-
-                        ncmpi_close(out.getId());
+                        MB_CHK_SET_ERR(
+                            NetcdfMeshIO::write_point_scalars_to_file(mb, target_file, output_file, write_request, entities),
+                            "Failed to write NetCDF output");
                     }
                     else {
                         // Save mesh with remapped data
