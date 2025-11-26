@@ -12,6 +12,19 @@
 
 namespace moab {
 
+namespace
+{
+template <typename SrcVec>
+void copy_to_double_vector( const SrcVec& input, std::vector<double>& output )
+{
+    output.resize( input.size() );
+    for( size_t i = 0; i < input.size(); ++i )
+    {
+        output[i] = static_cast<double>( input[i] );
+    }
+}
+}  // namespace
+
 ParallelPointCloudReader::ParallelPointCloudReader(Interface* interface, EntityHandle mesh_set)
     : m_interface(interface), m_mesh_set(mesh_set), m_ncfile(nullptr), m_total_points(0), m_is_usgs_format(false) {
 }
@@ -24,9 +37,16 @@ ErrorCode ParallelPointCloudReader::configure(const ReadConfig& config) {
     // initialize the configuration parameters
     m_config = config;
 
-    // Compute bounding boxes for mesh decomposition
-    // Since we have lat/lon coordinates, compute bounding box directly in lat/lon space from mesh vertices
-    MB_CHK_SET_ERR(compute_lonlat_bounding_box_from_mesh(this->m_local_bbox), "Failed to compute local lon/lat bounding box");
+    if (m_config.use_mesh_bounding_box) {
+        // Compute bounding boxes for mesh decomposition from provided mesh_set
+        MB_CHK_SET_ERR(compute_lonlat_bounding_box_from_mesh(this->m_local_bbox),
+                       "Failed to compute local lon/lat bounding box");
+    } else if (m_config.has_manual_bbox) {
+        m_local_bbox = m_config.manual_bbox;
+    } else {
+        m_local_bbox.min_coords = {0.0, -90.0};
+        m_local_bbox.max_coords = {360.0, 90.0};
+    }
 
     return MB_SUCCESS;
 }
@@ -836,6 +856,83 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
 
     // Call the data reading
     MB_CHK_ERR(read_all_data(points));
+
+    if (m_config.retain_point_cloud) {
+        m_cached_points = points;
+        m_have_cached_points = true;
+    }
+
+    return MB_SUCCESS;
+}
+
+ErrorCode ParallelPointCloudReader::build_mesh_from_point_cloud(const PointData& points,
+                                          Interface* mb,
+                                          EntityHandle mesh_set,
+                                          const MeshBuildOptions& options,
+                                          std::vector<EntityHandle>& entities) const
+{
+    if( nullptr == mb ) MB_SET_ERR( MB_FAILURE, "Invalid MOAB interface" );
+    if( 0 == mesh_set ) MB_SET_ERR( MB_FAILURE, "Invalid mesh set" );
+
+    const size_t total_points = points.size();
+    if( 0 == total_points ) MB_SET_ERR( MB_FAILURE, "Point cloud is empty" );
+
+    std::string area_var_name = options.area_variable_name;
+    if( area_var_name.empty() ) area_var_name = m_config.area_variable_name;
+
+    std::vector<double> area_data;
+    bool has_area = false;
+    if( !area_var_name.empty() )
+    {
+        auto dbl_it = points.d_scalar_variables.find( area_var_name );
+        if( dbl_it != points.d_scalar_variables.end() && dbl_it->second.size() == total_points )
+        {
+            area_data = dbl_it->second;
+            has_area  = true;
+        }
+        else
+        {
+            auto int_it = points.i_scalar_variables.find( area_var_name );
+            if( int_it != points.i_scalar_variables.end() && int_it->second.size() == total_points )
+            {
+                copy_to_double_vector( int_it->second, area_data );
+                has_area = true;
+            }
+        }
+    }
+
+    if( !has_area && !points.areas.empty() && points.areas.size() == total_points )
+    {
+        area_data = points.areas;
+        has_area  = true;
+    }
+
+    if( !has_area )
+    {
+        area_data.assign( total_points, 1.0 );
+    }
+
+    Tag area_tag = nullptr;
+    MB_CHK_SET_ERR( mb->tag_get_handle( "area", area_tag,
+                                        MB_TAG_DENSE | MB_TAG_CREAT ),
+                    "Failed to create area tag" );
+
+    entities.clear();
+    entities.resize( total_points );
+
+    for( size_t idx = 0; idx < total_points; ++idx )
+    {
+        std::array<double, 3> coords { 0.0, 0.0, 0.0 };
+        auto lon = points.longitude( idx );
+        auto lat = points.latitude( idx );
+        MB_CHK_SET_ERR( RLLtoXYZ_Deg( lon, lat, coords ), "Failed to convert lon/lat to Cartesian" );
+        MB_CHK_SET_ERR( mb->create_vertex( coords.data(), entities[idx] ), "Failed to create vertex" );
+    }
+
+    MB_CHK_SET_ERR( mb->tag_set_data( area_tag, entities.data(), total_points, area_data.data() ),
+                    "Failed to set area tag" );
+    MB_CHK_SET_ERR( mb->add_entities( mesh_set, entities.data(), total_points ),
+                    "Failed to add vertices to mesh set" );
 
     return MB_SUCCESS;
 }

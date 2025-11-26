@@ -215,6 +215,7 @@ int main(int argc, char* argv[]) {
         ParallelPointCloudReader::ReadConfig config;
         config.netcdf_filename = source_file;
         config.print_statistics = true;
+        config.use_mesh_bounding_box = true; // if true, regular grid; false for unstructured
         config.verbose = verbose;
 
         // Apply coordinate variable overrides (bypasses format detection)

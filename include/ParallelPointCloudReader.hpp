@@ -178,6 +178,17 @@ public:
         double sphere_radius = 1.0;  // Radius for coordinate conversion
         bool print_statistics = false; // Print detailed statistics
         bool verbose = false; // Print verbose output
+        bool use_mesh_bounding_box = true; // Use mesh_set to compute bbox by default
+        bool has_manual_bbox = false;
+        BoundingBox manual_bbox;
+        std::string area_variable_name; // Optional scalar variable to treat as area
+        std::string area_tag_name = "area";
+        bool retain_point_cloud = true; // Keep data cached for reuse
+    };
+
+    struct MeshBuildOptions {
+        std::string area_variable_name;
+        std::string area_tag_name = "area";
     };
 
 private:
@@ -193,6 +204,8 @@ private:
 
     // Spatial decomposition
     BoundingBox m_local_bbox;
+    PointData m_cached_points;
+    bool m_have_cached_points = false;
 
     // Point cloud data
     size_t m_total_points;
@@ -234,6 +247,13 @@ public:
     // Main reading interface
     ErrorCode read_points(PointData& points);
     const ReadConfig& get_config() const { return m_config; }
+    bool has_cached_point_cloud() const { return m_have_cached_points; }
+    const PointData& cached_point_cloud() const { return m_cached_points; }
+    ErrorCode build_mesh_from_point_cloud(const PointData& points,
+                                          Interface* mb,
+                                          EntityHandle mesh_set,
+                                          const MeshBuildOptions& options,
+                                          std::vector<EntityHandle>& entities) const;
 
     // Utility functions
     size_t get_point_count() const { return m_total_points; }
