@@ -1,11 +1,11 @@
 #include "MeshIO.hpp"
 
-#include "ParallelPointCloudReader.hpp"
+// #include "ParallelPointCloudReader.hpp"
+// #include "ScalarRemapper.hpp"
 #include "easylogging.hpp"
 #include "moab/ErrorHandler.hpp"
 
-// #include <pnetcdf>
-
+// C++ includes
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -69,7 +69,7 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
 
         ncmpi_close( nc.getId() );
 
-        Tag area_tag = 0;
+        Tag area_tag = nullptr;
         MB_CHK_SET_ERR( mb->tag_get_handle( "area", 1, MB_TYPE_DOUBLE, area_tag, MB_TAG_DENSE | MB_TAG_CREAT ),
                         "Failed to create area tag" );
 
@@ -135,6 +135,101 @@ ErrorCode fetch_tag_as_float( Interface* mb,
     }
 }
 }  // namespace
+
+
+ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
+                                                      const std::string& template_file,
+                                                      const std::string& output_file,
+                                                      const NetcdfWriteRequest& request,
+                                                      const ScalarRemapper::MeshData& mesh_data )
+{
+    if( nullptr == mb ) MB_SET_ERR( MB_FAILURE, "Invalid MOAB interface" );
+    if( !mesh_data.d_scalar_fields.size() && !mesh_data.i_scalar_fields.size() ) MB_SET_ERR( MB_FAILURE, "No entities provided for NetCDF write" );
+
+    const std::string dim_name = resolve_or_default( request.dimension_name, "ncol" );
+
+    // try
+    {
+        std::filesystem::copy_file( template_file,
+                                    output_file,
+                                    std::filesystem::copy_options::overwrite_existing );
+
+        PnetCDF::NcmpiFile out( MPI_COMM_WORLD, output_file.c_str(), PnetCDF::NcmpiFile::write, PnetCDF::NcmpiFile::classic5 );
+        // PnetCDF::NcmpiDim dim = out.getDim( dim_name );
+        // MPI_Offset ncol       = dim.getSize();
+
+        // std::vector< PnetCDF::NcmpiDim > dims;
+        // dims.push_back( dim );
+
+        // auto define_variable = [&]( const std::string& var_name ) {
+        //     out.addVar( var_name, PnetCDF::ncmpiFloat, dims );
+        // };
+
+        // for( const auto& name : request.scalar_var_names )
+        //     define_variable( name );
+        // for( const auto& base_name : request.squared_var_names )
+        //     define_variable( base_name + "_squared" );
+
+        // out.enddef();
+
+        auto write_variable = [&]( const PnetCDF::NcmpiVar& var ) -> ErrorCode {
+
+            // Check if it's a double variable
+            auto var_it = mesh_data.d_scalar_fields.find(var.getName());
+            if (var_it != mesh_data.d_scalar_fields.end()) {
+                const auto& values = var_it->second;
+
+                std::vector< double > ivalues(values.size());
+                std::transform(values.begin(), values.end(), ivalues.begin(), [](double d) { return static_cast<double>(d); });
+                // Vectorized weighted sum computation
+                var.putVar_all( ivalues.data() );
+            } else {
+                // Check if it's an integer variable
+                auto ivar_it = mesh_data.i_scalar_fields.find(var.getName());
+                if (ivar_it != mesh_data.i_scalar_fields.end()) {
+                    const auto& values = ivar_it->second;
+
+                    var.putVar_all( values.data() );
+                }
+            }
+
+            if( request.verbose )
+            {
+                LOG( INFO ) << "Wrote NetCDF variable " << var.getName() << " to " << output_file;
+            }
+            return MB_SUCCESS;
+        };
+
+        auto vars = out.getVars();
+
+        for( const auto& name : request.scalar_var_names )
+        {
+            for (const auto& v : vars) {
+                if (v.first == name) {
+                    MB_CHK_ERR( write_variable( v.second ) );
+                }
+            }
+        }
+
+        // for( const auto& base_name : request.squared_var_names )
+        // {
+        //     const std::string var_name = base_name + "_squared";
+        //     MB_CHK_ERR( write_variable( var_name ) );
+        // }
+
+        ncmpi_close( out.getId() );
+    }
+    // catch( const std::filesystem::filesystem_error& e )
+    // {
+    //     MB_SET_ERR( MB_FAILURE, "File copy error for NetCDF output: " << e.what() );
+    // }
+    // catch( const PnetCDF::exceptions::NcmpiException& e )
+    // {
+    //     MB_SET_ERR( MB_FAILURE, "NetCDF error while writing " << output_file << ": " << e.what() );
+    // }
+
+    return MB_SUCCESS;
+}
 
 ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
                                                       const std::string& template_file,

@@ -129,22 +129,22 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat, d
     }
 }
 
-size_t RegularGridLocator::radiusSearch(const ParallelPointCloudReader::PointType3D& query_point,
-                                       ParallelPointCloudReader::CoordinateType radius,
-                                       std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>>& matches) const {
+size_t RegularGridLocator::radiusSearch(const PointType3D& query_point,
+                                       CoordinateType radius,
+                                       std::vector<nanoflann::ResultItem<size_t, CoordinateType>>& matches) const {
     matches.clear();
 
-    ParallelPointCloudReader::CoordinateType query_lon = query_point[0];
-    ParallelPointCloudReader::CoordinateType query_lat = query_point[1];
+    CoordinateType query_lon = query_point[0];
+    CoordinateType query_lat = query_point[1];
 
     // Special case: if query is at pole, all longitude values at pole are equidistant
     if (is_at_pole(query_lat)) {
         // Find the latitude index closest to the pole
         size_t pole_ilat = (query_lat > 0) ? m_nlat - 1 : 0;
-        ParallelPointCloudReader::CoordinateType pole_lat = m_lats[pole_ilat];
+        CoordinateType pole_lat = m_lats[pole_ilat];
 
         // Check if pole is within radius
-        ParallelPointCloudReader::CoordinateType pole_dist = std::abs(query_lat - pole_lat);
+        CoordinateType pole_dist = std::abs(query_lat - pole_lat);
         if (pole_dist <= radius) {
             // All longitudes at pole are valid
             for (size_t ilon = 0; ilon < m_nlon; ++ilon) {
@@ -162,7 +162,7 @@ size_t RegularGridLocator::radiusSearch(const ParallelPointCloudReader::PointTyp
 
     // Search within bounds
     for (size_t ilat = ilat_min; ilat <= ilat_max; ++ilat) {
-        ParallelPointCloudReader::CoordinateType grid_lat = m_lats[ilat];
+        CoordinateType grid_lat = m_lats[ilat];
 
         // Check if this latitude is at a pole
         bool lat_at_pole = is_at_pole(grid_lat);
@@ -170,8 +170,8 @@ size_t RegularGridLocator::radiusSearch(const ParallelPointCloudReader::PointTyp
         if (wraps_around) {
             // Search all longitudes
             for (size_t ilon = 0; ilon < m_nlon; ++ilon) {
-                ParallelPointCloudReader::CoordinateType grid_lon = m_lons[ilon];
-                ParallelPointCloudReader::CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                CoordinateType grid_lon = m_lons[ilon];
+                CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
 
                 if (dist <= radius) {
                     size_t idx = get_linear_index(ilat, ilon);
@@ -184,8 +184,8 @@ size_t RegularGridLocator::radiusSearch(const ParallelPointCloudReader::PointTyp
         } else {
             // Search limited longitude range
             for (size_t ilon = ilon_min; ilon <= ilon_max; ++ilon) {
-                ParallelPointCloudReader::CoordinateType grid_lon = m_lons[ilon];
-                ParallelPointCloudReader::CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                CoordinateType grid_lon = m_lons[ilon];
+                CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
 
                 if (dist <= radius) {
                     size_t idx = get_linear_index(ilat, ilon);
@@ -205,12 +205,12 @@ size_t RegularGridLocator::radiusSearch(const ParallelPointCloudReader::PointTyp
     return matches.size();
 }
 
-void RegularGridLocator::knnSearch(const ParallelPointCloudReader::PointType3D& query_point,
+void RegularGridLocator::knnSearch(const PointType3D& query_point,
                                   size_t k,
                                   size_t* indices,
-                                  ParallelPointCloudReader::CoordinateType* distances_sq) const {
-    ParallelPointCloudReader::CoordinateType query_lon = query_point[0];
-    ParallelPointCloudReader::CoordinateType query_lat = query_point[1];
+                                  CoordinateType* distances_sq) const {
+    CoordinateType query_lon = query_point[0];
+    CoordinateType query_lat = query_point[1];
 
     // Normalize query longitude
     query_lon = normalize_longitude(query_lon);
@@ -223,9 +223,9 @@ void RegularGridLocator::knnSearch(const ParallelPointCloudReader::PointType3D& 
     // Special case: query at pole
     if (is_at_pole(query_lat)) {
         size_t pole_ilat = (query_lat > 0) ? m_nlat - 1 : 0;
-        ParallelPointCloudReader::CoordinateType pole_lat = m_lats[pole_ilat];
-        ParallelPointCloudReader::CoordinateType pole_dist = std::abs(query_lat - pole_lat);
-        ParallelPointCloudReader::CoordinateType pole_dist_sq = pole_dist * pole_dist;
+        CoordinateType pole_lat = m_lats[pole_ilat];
+        CoordinateType pole_dist = std::abs(query_lat - pole_lat);
+        CoordinateType pole_dist_sq = pole_dist * pole_dist;
 
         // Add pole points (just one since they're all the same)
         size_t idx = get_linear_index(pole_ilat, 0);
@@ -235,7 +235,7 @@ void RegularGridLocator::knnSearch(const ParallelPointCloudReader::PointType3D& 
         if (k > 1 && pole_ilat > 0) {
             for (size_t ilat = pole_ilat - 1; max_heap.size() < k && ilat < m_nlat; --ilat) {
                 for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
-                    ParallelPointCloudReader::CoordinateType dist = compute_distance(query_lon, query_lat, m_lons[ilon], m_lats[ilat]);
+                    CoordinateType dist = compute_distance(query_lon, query_lat, m_lons[ilon], m_lats[ilat]);
                     size_t index = get_linear_index(ilat, ilon);
                     max_heap.push({dist * dist, index});
                 }
@@ -270,10 +270,10 @@ void RegularGridLocator::knnSearch(const ParallelPointCloudReader::PointType3D& 
                     while (ilon < 0) ilon += m_nlon;
                     while (ilon >= static_cast<int>(m_nlon)) ilon -= m_nlon;
 
-                    ParallelPointCloudReader::CoordinateType grid_lon = m_lons[ilon];
-                    ParallelPointCloudReader::CoordinateType grid_lat = m_lats[ilat];
-                    ParallelPointCloudReader::CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
-                    ParallelPointCloudReader::CoordinateType dist_sq = dist * dist;
+                    CoordinateType grid_lon = m_lons[ilon];
+                    CoordinateType grid_lat = m_lats[ilat];
+                    CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                    CoordinateType dist_sq = dist * dist;
 
                     size_t idx = get_linear_index(ilat, ilon);
 

@@ -11,6 +11,7 @@
 #include <map>
 #include <string>
 #include <memory>
+#include <unordered_map>
 
 namespace moab {
 
@@ -20,10 +21,10 @@ namespace moab {
  * @brief Point cloud adapter for nanoflann KD-tree
  */
 struct PointCloudAdapter {
-    // const std::vector<ParallelPointCloudReader::PointType>& latlon_points;
-    std::vector<ParallelPointCloudReader::CoordinateType> points;
+    // const std::vector<PointType>& latlon_points;
+    std::vector<CoordinateType> points;
 
-    PointCloudAdapter(const std::vector<ParallelPointCloudReader::PointType>& pts) //: latlon_points(pts)
+    PointCloudAdapter(const std::vector<PointType>& pts) //: latlon_points(pts)
     {
         points.resize(pts.size() * 3);
 #pragma omp parallel for shared(pts, points)
@@ -37,7 +38,7 @@ struct PointCloudAdapter {
     inline size_t kdtree_get_point_count() const { return points.size() / 3; }
 
     // Returns the dim'th component of the idx'th point in the class
-    inline ParallelPointCloudReader::CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
+    inline CoordinateType kdtree_get_pt(const size_t idx, const size_t dim) const {
         return points[idx * 3 + dim];
     }
 
@@ -48,8 +49,8 @@ struct PointCloudAdapter {
 
 // Define the KD-tree type with explicit template parameters
 typedef nanoflann::KDTreeSingleIndexAdaptor<
-    nanoflann::L2_Simple_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
-    // nanoflann::SO2_Adaptor<ParallelPointCloudReader::CoordinateType, PointCloudAdapter, ParallelPointCloudReader::CoordinateType, size_t>,
+    nanoflann::L2_Simple_Adaptor<CoordinateType, PointCloudAdapter, CoordinateType, size_t>,
+    // nanoflann::SO2_Adaptor<CoordinateType, PointCloudAdapter, CoordinateType, size_t>,
     PointCloudAdapter,
     3, /* dim */
     size_t /* IndexType */
@@ -66,15 +67,26 @@ class ScalarRemapper {
 public:
     struct RemapConfig {
         std::vector<std::string> scalar_var_names;  // Variables to remap
-        int max_neighbors = 1;                      // Maximum neighbors to consider
         bool is_usgs_format = false;                 // Use USGS format for point cloud
         bool use_kd_tree = false;                   // Use KD-tree (true) or RegularGridLocator (false) for USGS format
         RegularGridLocator::DistanceMetric distance_metric = RegularGridLocator::HAVERSINE; // Distance metric for RegularGridLocator
+        // const ParallelPointCloudReader::PointCloudMeshView* target_point_cloud_view = nullptr;
+        bool reuse_source_mesh = false; // Reuse source mesh as target so that we can smoothen the data
+        double user_search_area = 0.0; // User-specified search area for smoothing
     };
 
     struct MeshData {
+
+        size_t size() const { return elements.size(); }
+
+        const PointType3D& centroid(size_t index) const {
+            return centroids[index];
+        }
+
         std::vector<EntityHandle> elements;         // Local mesh elements
-        std::vector<ParallelPointCloudReader::PointType3D> centroids; // Element centroids
+        std::vector<PointType3D> centroids; // Element centroids
+
+        public:
         std::unordered_map<std::string, std::vector<double>> d_scalar_fields; // Remapped data
         std::unordered_map<std::string, std::vector<int>> i_scalar_fields; // Remapped data
     };
@@ -89,6 +101,8 @@ protected:
     RemapConfig m_config;
     MeshData m_mesh_data;
     bool m_target_is_spectral;
+    bool m_self_remapping = false;
+    double m_user_search_area = 0.0; // User-specified search area for smoothing
 
 public:
     ScalarRemapper(Interface* interface, EntityHandle mesh_set);
@@ -108,16 +122,21 @@ protected:
     // Abstract method to be implemented by derived classes
     virtual ErrorCode perform_remapping(const ParallelPointCloudReader::PointData& point_data) = 0;
 
+    // Abstract method to be implemented by derived classes
+    virtual ErrorCode perform_self_remapping(const ParallelPointCloudReader::PointData& point_data);
+    ErrorCode smoothen_field_constant_area_averaging(
+    const ParallelPointCloudReader::PointData& point_data, double constant_area);
+
     // Utility methods
     ErrorCode extract_mesh_centroids();
-    ErrorCode compute_element_centroid(EntityHandle element, ParallelPointCloudReader::PointType3D& centroid);
+    ErrorCode compute_element_centroid(EntityHandle element, PointType3D& centroid);
 
     // Validation and statistics
     ErrorCode validate_remapping_results();
     void print_remapping_statistics();
 
-    std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>>  find_nearest_point(const ParallelPointCloudReader::PointType3D& target_point,
-                          const ParallelPointCloudReader::PointData& point_data, const size_t *max_neighbors = nullptr, const ParallelPointCloudReader::CoordinateType* search_radius = nullptr);
+    std::vector<nanoflann::ResultItem<size_t, CoordinateType>>  find_nearest_point(const PointType3D& target_point,
+                          const ParallelPointCloudReader::PointData& point_data, const size_t *max_neighbors = nullptr, const CoordinateType* search_radius = nullptr);
 
     // Spatial query members: KD-tree or RegularGridLocator
     std::unique_ptr<PointCloudAdapter> m_adapter;

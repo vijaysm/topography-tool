@@ -18,6 +18,63 @@
 
 namespace moab {
 
+// some definitions
+typedef double CoordinateType;
+typedef std::array<CoordinateType, 3> PointType3D;
+typedef std::array<CoordinateType, 2> PointType;
+// static const variables
+static constexpr CoordinateType ReferenceTolerance = 1e-12;
+
+template<typename T>
+inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, T* coordinates) {
+    // Convert lon/lat (in degrees) to Cartesian coordinates on unit sphere
+    T lon_rad = lon_deg * M_PI / 180.0;
+    T lat_rad = lat_deg * M_PI / 180.0;
+
+    T cos_lat = cos(lat_rad);
+    coordinates[0] = cos_lat * cos(lon_rad);  // x
+    coordinates[1] = cos_lat * sin(lon_rad);  // y
+    coordinates[2] = sin(lat_rad);            // z
+    return MB_SUCCESS;
+}
+
+template<typename T>
+inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coordinates) {
+    return RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
+}
+
+/// <summary>
+///   Calculate latitude and longitude from normalized 3D Cartesian
+///   coordinates, in degrees.
+/// </summary>
+template<typename SType, typename T>
+inline moab::ErrorCode XYZtoRLL_Deg(const SType* coordinates, T & lon_deg, T & lat_deg) {
+    // SType dMag2 = coordinates[0] * coordinates[0] + coordinates[1] * coordinates[1] + coordinates[2] * coordinates[2];
+
+    // always project to the unit sphere
+    SType dMag = std::sqrt(coordinates[0] * coordinates[0] + coordinates[1] * coordinates[1] + coordinates[2] * coordinates[2]);
+    SType x = coordinates[0] / dMag;
+    SType y = coordinates[1] / dMag;
+    SType z = coordinates[2] / dMag;
+
+    if (fabs(z) < 1.0 - ReferenceTolerance) {
+        lon_deg = (atan2(y, x)) * 180.0 / M_PI;
+        lat_deg = (asin(z)) * 180.0 / M_PI;
+
+        if (lon_deg < 0.0) {
+            lon_deg += 360.0;
+        }
+    } else if (z > 0.0) {
+        lon_deg = 0.0;
+        lat_deg = 90.0;
+    } else {
+        lon_deg = 0.0;
+        lat_deg = -90.0;
+    }
+    return moab::MB_SUCCESS;
+}
+
+
 /**
  * @brief Efficient NetCDF point cloud reader for MOAB meshes
  *
@@ -28,11 +85,8 @@ namespace moab {
 class ParallelPointCloudReader {
 public:
     // Type definitions for easier use - made configurable via typedefs
-    typedef double CoordinateType;
     static constexpr int DIM = 2;
-    static constexpr CoordinateType ReferenceTolerance = 1e-12;
-    using PointType3D = std::array<CoordinateType, 3>;
-    using PointType = std::array<CoordinateType, 2>;
+
 
     // Custom hash for PointType to detect duplicates
     struct PointHash {
@@ -104,6 +158,18 @@ public:
         }
 
         /**
+         * @brief Get total number of points
+         * For structured grids: nlat * nlon
+         * For unstructured: lonlat_coordinates.size()
+         */
+        bool empty() const {
+            if (is_structured_grid) {
+                return latitudes.empty() && longitudes.empty();
+            }
+            return lonlat_coordinates.empty();
+        }
+
+        /**
          * @brief Get longitude at global index
          * For structured grids: computes from 1D arrays (lon moves fastest)
          * For unstructured: reads from explicit storage
@@ -168,6 +234,27 @@ public:
         }
     };
 
+    // struct PointCloudMeshView {
+
+    //     explicit PointCloudMeshView(const PointData& refpoints, double default_area) : points(refpoints), area(default_area) {
+
+    //     }
+
+    //     ErrorCode cartesian_coords(size_t index, PointType3D& point3d) const {
+    //         auto lon = points.longitude( index );
+    //         auto lat = points.latitude( index );
+    //         MB_CHK_SET_ERR( RLLtoXYZ_Deg( lon, lat, point3d ),
+    //                         "Failed to convert lon/lat to Cartesian" );
+    //         return MB_SUCCESS;
+    //     }
+
+    //     size_t size() const { return points.size(); }
+    //     bool empty() const { return points.empty(); }
+
+    //     const PointData& points;
+    //     const double area;
+    // };
+
     struct ReadConfig {
         std::string netcdf_filename;
         std::vector<std::string> coord_var_names = {"lon", "lat"};
@@ -178,18 +265,10 @@ public:
         double sphere_radius = 1.0;  // Radius for coordinate conversion
         bool print_statistics = false; // Print detailed statistics
         bool verbose = false; // Print verbose output
-        bool use_mesh_bounding_box = true; // Use mesh_set to compute bbox by default
-        bool has_manual_bbox = false;
-        BoundingBox manual_bbox;
-        std::string area_variable_name; // Optional scalar variable to treat as area
-        std::string area_tag_name = "area";
+
         bool retain_point_cloud = true; // Keep data cached for reuse
     };
 
-    struct MeshBuildOptions {
-        std::string area_variable_name;
-        std::string area_tag_name = "area";
-    };
 
 private:
     Interface* m_interface;
@@ -203,7 +282,6 @@ private:
     std::unordered_map<std::string, PnetCDF::NcmpiVar> m_vars;
 
     // Spatial decomposition
-    BoundingBox m_local_bbox;
     PointData m_cached_points;
     bool m_have_cached_points = false;
 
@@ -252,8 +330,8 @@ public:
     ErrorCode build_mesh_from_point_cloud(const PointData& points,
                                           Interface* mb,
                                           EntityHandle mesh_set,
-                                          const MeshBuildOptions& options,
-                                          std::vector<EntityHandle>& entities) const;
+                                          std::vector<EntityHandle>& entities,
+                                          double default_area) const;
 
     // Utility functions
     size_t get_point_count() const { return m_total_points; }
@@ -299,57 +377,6 @@ private:
     ErrorCode read_standard_format_impl(PointData& points);
     ErrorCode read_points_chunked(PointData& points);
 };
-
-
-
-template<typename T>
-inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, T* coordinates) {
-    // Convert lon/lat (in degrees) to Cartesian coordinates on unit sphere
-    T lon_rad = lon_deg * M_PI / 180.0;
-    T lat_rad = lat_deg * M_PI / 180.0;
-
-    T cos_lat = cos(lat_rad);
-    coordinates[0] = cos_lat * cos(lon_rad);  // x
-    coordinates[1] = cos_lat * sin(lon_rad);  // y
-    coordinates[2] = sin(lat_rad);            // z
-    return MB_SUCCESS;
-}
-
-template<typename T>
-inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coordinates) {
-    return RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
-}
-
-/// <summary>
-///   Calculate latitude and longitude from normalized 3D Cartesian
-///   coordinates, in degrees.
-/// </summary>
-template<typename SType, typename T>
-inline moab::ErrorCode XYZtoRLL_Deg(const SType* coordinates, T & lon_deg, T & lat_deg) {
-    // SType dMag2 = coordinates[0] * coordinates[0] + coordinates[1] * coordinates[1] + coordinates[2] * coordinates[2];
-
-    // always project to the unit sphere
-    SType dMag = std::sqrt(coordinates[0] * coordinates[0] + coordinates[1] * coordinates[1] + coordinates[2] * coordinates[2]);
-    SType x = coordinates[0] / dMag;
-    SType y = coordinates[1] / dMag;
-    SType z = coordinates[2] / dMag;
-
-    if (fabs(z) < 1.0 - ParallelPointCloudReader::ReferenceTolerance) {
-        lon_deg = (atan2(y, x)) * 180.0 / M_PI;
-        lat_deg = (asin(z)) * 180.0 / M_PI;
-
-        if (lon_deg < 0.0) {
-            lon_deg += 360.0;
-        }
-    } else if (z > 0.0) {
-        lon_deg = 0.0;
-        lat_deg = 90.0;
-    } else {
-        lon_deg = 0.0;
-        lat_deg = -90.0;
-    }
-    return moab::MB_SUCCESS;
-}
 
 
 

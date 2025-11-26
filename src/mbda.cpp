@@ -93,6 +93,8 @@ int main(int argc, char* argv[]) {
         std::string area_variable = "";
         std::string fields_string_list = "";
         std::string square_fields_string_list = "";
+        bool reuse_source_mesh = false;
+        double user_smoothing_area = 0.0;
 
         // Remapping options
         std::string remap_method = "ALG_DISKAVERAGE";
@@ -113,9 +115,16 @@ int main(int argc, char* argv[]) {
         opts.addOpt<std::string>("remap-method", "Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). Default: da", &remap_method);
 
         opts.addOpt<void>("spectral", "Assume that the target mesh requires online spectral element mesh treatment. Default: false", &spectral_target);
+        opts.addOpt<void>("reuse-source-mesh", "Skip loading a target mesh file and reuse the source point cloud as the target mesh", &reuse_source_mesh);
         opts.addOpt<void>("verbose,v", "Enable verbose output with timestamps. Default: false", &verbose);
+        opts.addOpt<double>("smoothing-area", "Smoothing area for the target mesh. Default: 0.0", &user_smoothing_area);
 
         opts.parseCommandLine(argc, argv);
+
+        if (reuse_source_mesh && user_smoothing_area < 1E-12) {
+            LOG(ERROR) << "Error: Smoothing area needs to be specified when using reuse-source-mesh";
+            return 1;
+        }
 
         // Configure logging format based on verbose flag
         el::Configurations defaultConf;
@@ -183,6 +192,7 @@ int main(int argc, char* argv[]) {
         }
 
         std::vector<EntityHandle> entities;
+        const bool build_target_from_source = reuse_source_mesh && !spectral_target;
         if (spectral_target) {
             // Always use parallel options
             std::string read_opts = "DEBUG_IO=0";
@@ -194,7 +204,8 @@ int main(int argc, char* argv[]) {
             // Get all elements in the mesh set
             MB_CHK_SET_ERR( mb->get_entities_by_dimension(mesh_set, 2, entities), "Failed to get elements by dimension");
 
-        } else {
+
+        } else if (!build_target_from_source) {
             NetcdfLoadOptions load_opts;
             load_opts.dimension_name = dimension_variable;
             load_opts.lon_var_name   = lon_variable;
@@ -205,8 +216,13 @@ int main(int argc, char* argv[]) {
 
             MB_CHK_SET_ERR(NetcdfMeshIO::load_point_cloud_from_file(mb, mesh_set, target_file, load_opts, entities),
                            "Failed to load NetCDF mesh file");
+
+        } else {
+            if (rank == 0) {
+                LOG(INFO) << "Reuse-source-mesh is enabled; target mesh will be built from the source point cloud.";
+            }
         }
-        if (rank == 0) {
+        if (!reuse_source_mesh && rank == 0) {
             LOG(INFO) << "Loaded target mesh: " << target_file;
         }
 
@@ -215,7 +231,6 @@ int main(int argc, char* argv[]) {
         ParallelPointCloudReader::ReadConfig config;
         config.netcdf_filename = source_file;
         config.print_statistics = true;
-        config.use_mesh_bounding_box = true; // if true, regular grid; false for unstructured
         config.verbose = verbose;
 
         // Apply coordinate variable overrides (bypasses format detection)
@@ -238,6 +253,15 @@ int main(int argc, char* argv[]) {
 
         ParallelPointCloudReader::PointData local_points;
         MB_CHK_SET_ERR( reader.read_points(local_points), "Failed to read points");
+
+        // if (build_target_from_source) {
+        //     MB_CHK_SET_ERR(
+        //         reader.build_mesh_from_point_cloud(local_points, mb, mesh_set, entities, user_smoothing_area),
+        //         "Failed to construct target mesh from source point cloud");
+        //     if (rank == 0) {
+        //         LOG(INFO) << "Constructed target mesh from source point cloud with " << entities.size() << " vertices.";
+        //     }
+        // }
 
         if (reader.get_config().print_statistics) {
             auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
@@ -269,14 +293,17 @@ int main(int argc, char* argv[]) {
             if (remapper) {
                 // Configure remapping
                 ScalarRemapper::RemapConfig remap_config;
+                // ParallelPointCloudReader::PointCloudMeshView target_view (reader.cached_point_cloud(), user_smoothing_area);
+                // remap_config.target_point_cloud_view = &target_view;
                 remap_config.scalar_var_names = reader.get_config().scalar_var_names;
+                remap_config.reuse_source_mesh = build_target_from_source;
+                remap_config.user_search_area = user_smoothing_area;
 
                 // Add squared field names to the remapping list
                 for (const auto& field_name : reader.get_config().square_field_names) {
                     remap_config.scalar_var_names.push_back(field_name + "_squared");
                 }
 
-                remap_config.max_neighbors = 1;
                 remap_config.is_usgs_format = reader.is_usgs_format();
 
                 MB_CHK_SET_ERR(remapper->configure(remap_config), "Failed to configure remapper");
@@ -285,7 +312,9 @@ int main(int argc, char* argv[]) {
                 MB_CHK_SET_ERR(remapper->remap_scalars(local_points), "Failed to perform scalar remapping");
 
                 // Write remapped data to MOAB tags
-                MB_CHK_SET_ERR(remapper->write_to_tags(""), "Failed to write remapped data to tags");
+                if (!build_target_from_source) {
+                    MB_CHK_SET_ERR(remapper->write_to_tags(""), "Failed to write remapped data to tags");
+                }
 
                 if (rank == 0) {
                     LOG(INFO) << "Successfully created remapped tags on mesh elements";
@@ -308,9 +337,17 @@ int main(int argc, char* argv[]) {
                         write_request.dimension_name = dimension_variable;
                         write_request.verbose = verbose && (rank == 0);
 
-                        MB_CHK_SET_ERR(
-                            NetcdfMeshIO::write_point_scalars_to_file(mb, target_file, output_file, write_request, entities),
-                            "Failed to write NetCDF output");
+                        if (!build_target_from_source) {
+                            MB_CHK_SET_ERR(
+                                NetcdfMeshIO::write_point_scalars_to_file(mb, target_file, output_file, write_request, entities),
+                                "Failed to write NetCDF output");
+                        }
+                        else {
+                            const auto& get_mesh_data = remapper->get_mesh_data();
+                            MB_CHK_SET_ERR(
+                                NetcdfMeshIO::write_point_scalars_to_file(mb, source_file, output_file, write_request, get_mesh_data),
+                                "Failed to write NetCDF output");
+                        }
                     }
                     else {
                         // Save mesh with remapped data

@@ -2,6 +2,7 @@
 #define NETCDF_MESH_IO_HPP
 
 #include "moab/Interface.hpp"
+#include "ScalarRemapper.hpp"
 
 #include <string>
 #include <vector>
@@ -27,6 +28,10 @@ struct NetcdfWriteRequest
     bool verbose               = false;
 };
 
+// Forward declaration
+class ScalarRemapper;
+struct MeshData;
+
 class NetcdfMeshIO
 {
   public:
@@ -41,6 +46,13 @@ class NetcdfMeshIO
                                                   const std::string& output_file,
                                                   const NetcdfWriteRequest& request,
                                                   const std::vector< EntityHandle >& entities );
+
+    static ErrorCode write_point_scalars_to_file( Interface* mb,
+                                                  const std::string& template_file,
+                                                  const std::string& output_file,
+                                                  const NetcdfWriteRequest& request,
+                                                  const moab::ScalarRemapper::MeshData& mesh_data );
+                                                  // const MeshData& mesh_data );
 };
 
 }  // namespace moab

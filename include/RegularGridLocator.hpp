@@ -46,9 +46,9 @@ public:
      * @param matches Output vector of (index, distance_squared) pairs
      * @return Number of matches found
      */
-    size_t radiusSearch(const ParallelPointCloudReader::PointType3D& query_point,
-                       ParallelPointCloudReader::CoordinateType radius,
-                       std::vector<nanoflann::ResultItem<size_t, ParallelPointCloudReader::CoordinateType>>& matches) const;
+    size_t radiusSearch(const PointType3D& query_point,
+                       CoordinateType radius,
+                       std::vector<nanoflann::ResultItem<size_t, CoordinateType>>& matches) const;
 
     /**
      * @brief K nearest neighbor search
@@ -58,10 +58,10 @@ public:
      * @param indices Output array of k indices
      * @param distances_sq Output array of k squared distances
      */
-    void knnSearch(const ParallelPointCloudReader::PointType3D& query_point,
+    void knnSearch(const PointType3D& query_point,
                   size_t k,
                   size_t* indices,
-                  ParallelPointCloudReader::CoordinateType* distances_sq) const;
+                  CoordinateType* distances_sq) const;
 
     /**
      * @brief Get total number of points in grid

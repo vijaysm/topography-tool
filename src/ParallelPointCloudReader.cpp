@@ -37,16 +37,6 @@ ErrorCode ParallelPointCloudReader::configure(const ReadConfig& config) {
     // initialize the configuration parameters
     m_config = config;
 
-    if (m_config.use_mesh_bounding_box) {
-        // Compute bounding boxes for mesh decomposition from provided mesh_set
-        MB_CHK_SET_ERR(compute_lonlat_bounding_box_from_mesh(this->m_local_bbox),
-                       "Failed to compute local lon/lat bounding box");
-    } else if (m_config.has_manual_bbox) {
-        m_local_bbox = m_config.manual_bbox;
-    } else {
-        m_local_bbox.min_coords = {0.0, -90.0};
-        m_local_bbox.max_coords = {360.0, 90.0};
-    }
 
     return MB_SUCCESS;
 }
@@ -395,65 +385,9 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 }
 
 
-ErrorCode ParallelPointCloudReader::compute_lonlat_bounding_box_from_mesh(BoundingBox& lonlat_bbox) {
-    // Get all vertices from the mesh set
-    Range vertices, elements;
-    MB_CHK_ERR(m_interface->get_entities_by_type(m_mesh_set, MBVERTEX, vertices));
-    MB_CHK_ERR(m_interface->get_entities_by_type(m_mesh_set, MBQUAD, elements));
-    elements.merge(vertices);
-
-    if (elements.empty()) {
-        return MB_FAILURE;
-    }
-
-    // Get vertex coordinates
-    std::vector<double> coords(elements.size() * 3);
-    MB_CHK_ERR(m_interface->get_coords(elements, coords.data()));
-
-    // Initialize bounding box with invalid values to detect if we find any valid coordinates
-    lonlat_bbox.min_coords.fill(std::numeric_limits<double>::max());
-    lonlat_bbox.max_coords.fill(std::numeric_limits<double>::lowest());
-
-    // Convert each vertex from Cartesian to lat/lon and update bounding box
-    for (size_t i = 0; i < elements.size(); ++i) {
-        const double *coordinates = coords.data() + i * 3;
-
-        CoordinateType lon, lat;
-        MB_CHK_ERR(XYZtoRLL_Deg(coordinates, lon, lat));
-
-        // Initialize bounding box on first valid coordinate
-        // Update bounding box
-        lonlat_bbox.min_coords[0] = std::min(lonlat_bbox.min_coords[0], lon);
-        lonlat_bbox.max_coords[0] = std::max(lonlat_bbox.max_coords[0], lon);
-        lonlat_bbox.min_coords[1] = std::min(lonlat_bbox.min_coords[1], lat);
-        lonlat_bbox.max_coords[1] = std::max(lonlat_bbox.max_coords[1], lat);
-    }
-
-    // If no valid coordinates found, set a default global bounding box
-    if (lonlat_bbox.min_coords[0] == std::numeric_limits<double>::max() || lonlat_bbox.min_coords[1] == std::numeric_limits<double>::max() || lonlat_bbox.max_coords[0] == std::numeric_limits<double>::lowest() || lonlat_bbox.max_coords[1] == std::numeric_limits<double>::lowest()) {
-        MB_CHK_SET_ERR(MB_FAILURE, "No valid coordinates found in mesh");
-    }
-
-    // Ensure longitude stays within [0, 180] bounds and latitude within [-90, 90]
-    assert(lonlat_bbox.min_coords[0] >= 0.0);
-    assert(lonlat_bbox.min_coords[1] >= -90.0);
-    if(lonlat_bbox.max_coords[0] > 360.0)
-        LOG(INFO) << "Found longitude " << lonlat_bbox.max_coords[0] << " which is greater than 360" ;
-    assert(lonlat_bbox.max_coords[0] <= 360.0);
-    assert(lonlat_bbox.max_coords[1] <= 90.0);
-
-    {
-        LOG(INFO) << "Computed lat/lon bounding box: lon[" << lonlat_bbox.min_coords[0]
-                  << ", " << lonlat_bbox.max_coords[0] << "] lat[" << lonlat_bbox.min_coords[1]
-                  << ", " << lonlat_bbox.max_coords[1] << "]" ;
-    }
-
-    return MB_SUCCESS;
-}
-
 
 ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, size_t count,
-                                   std::vector<ParallelPointCloudReader::PointType>& coords) {
+                                   std::vector<PointType>& coords) {
 
     if (m_config.coord_var_names.size() < 2) return MB_FAILURE;
 
@@ -868,8 +802,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
 ErrorCode ParallelPointCloudReader::build_mesh_from_point_cloud(const PointData& points,
                                           Interface* mb,
                                           EntityHandle mesh_set,
-                                          const MeshBuildOptions& options,
-                                          std::vector<EntityHandle>& entities) const
+                                          std::vector<EntityHandle>& entities,
+                                          double default_area) const
 {
     if( nullptr == mb ) MB_SET_ERR( MB_FAILURE, "Invalid MOAB interface" );
     if( 0 == mesh_set ) MB_SET_ERR( MB_FAILURE, "Invalid mesh set" );
@@ -877,44 +811,20 @@ ErrorCode ParallelPointCloudReader::build_mesh_from_point_cloud(const PointData&
     const size_t total_points = points.size();
     if( 0 == total_points ) MB_SET_ERR( MB_FAILURE, "Point cloud is empty" );
 
-    std::string area_var_name = options.area_variable_name;
-    if( area_var_name.empty() ) area_var_name = m_config.area_variable_name;
-
     std::vector<double> area_data;
-    bool has_area = false;
-    if( !area_var_name.empty() )
+    if( !points.areas.empty() && points.areas.size() == total_points )
     {
-        auto dbl_it = points.d_scalar_variables.find( area_var_name );
-        if( dbl_it != points.d_scalar_variables.end() && dbl_it->second.size() == total_points )
-        {
-            area_data = dbl_it->second;
-            has_area  = true;
-        }
-        else
-        {
-            auto int_it = points.i_scalar_variables.find( area_var_name );
-            if( int_it != points.i_scalar_variables.end() && int_it->second.size() == total_points )
-            {
-                copy_to_double_vector( int_it->second, area_data );
-                has_area = true;
-            }
-        }
-    }
-
-    if( !has_area && !points.areas.empty() && points.areas.size() == total_points )
-    {
+        LOG(INFO) << "Using area data from point cloud";
         area_data = points.areas;
-        has_area  = true;
     }
-
-    if( !has_area )
+    else
     {
-        area_data.assign( total_points, 1.0 );
+        LOG(INFO) << "Using default user-specified area = " << default_area;
+        area_data.assign( total_points, default_area );
     }
 
     Tag area_tag = nullptr;
-    MB_CHK_SET_ERR( mb->tag_get_handle( "area", area_tag,
-                                        MB_TAG_DENSE | MB_TAG_CREAT ),
+    MB_CHK_SET_ERR( mb->tag_get_handle( "area", 1, MB_TYPE_DOUBLE, area_tag, MB_TAG_DENSE | MB_TAG_CREAT, &default_area ),
                     "Failed to create area tag" );
 
     entities.clear();
