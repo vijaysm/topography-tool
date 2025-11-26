@@ -137,6 +137,34 @@ ErrorCode fetch_tag_as_float( Interface* mb,
 }  // namespace
 
 
+template<typename T>
+static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapper::MeshData& mesh_data ) {
+
+    // Check if it's a double variable
+    auto var_it = mesh_data.d_scalar_fields.find(var.getName());
+    if (var_it != mesh_data.d_scalar_fields.end()) {
+        const auto& values = var_it->second;
+
+        std::vector< T > castValues(values.size());
+        std::transform(values.begin(), values.end(), castValues.begin(), [](double d) { return static_cast<T>(d); });
+        // Vectorized weighted sum computation
+        var.putVar_all( castValues.data() );
+    } else {
+        // Check if it's an integer variable
+        auto ivar_it = mesh_data.i_scalar_fields.find(var.getName());
+        if (ivar_it != mesh_data.i_scalar_fields.end()) {
+            const auto& values = ivar_it->second;
+
+            std::vector< T > castValues(values.size());
+            std::transform(values.begin(), values.end(), castValues.begin(), [](int i) { return static_cast<T>(i); });
+            var.putVar_all( castValues.data() );
+        }
+    }
+
+    return MB_SUCCESS;
+};
+
+
 ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
                                                       const std::string& template_file,
                                                       const std::string& output_file,
@@ -155,58 +183,31 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
                                     std::filesystem::copy_options::overwrite_existing );
 
         PnetCDF::NcmpiFile out( MPI_COMM_WORLD, output_file.c_str(), PnetCDF::NcmpiFile::write, PnetCDF::NcmpiFile::classic5 );
-        // PnetCDF::NcmpiDim dim = out.getDim( dim_name );
-        // MPI_Offset ncol       = dim.getSize();
-
-        // std::vector< PnetCDF::NcmpiDim > dims;
-        // dims.push_back( dim );
-
-        // auto define_variable = [&]( const std::string& var_name ) {
-        //     out.addVar( var_name, PnetCDF::ncmpiFloat, dims );
-        // };
-
-        // for( const auto& name : request.scalar_var_names )
-        //     define_variable( name );
-        // for( const auto& base_name : request.squared_var_names )
-        //     define_variable( base_name + "_squared" );
-
-        // out.enddef();
-
-        auto write_variable = [&]( const PnetCDF::NcmpiVar& var ) -> ErrorCode {
-
-            // Check if it's a double variable
-            auto var_it = mesh_data.d_scalar_fields.find(var.getName());
-            if (var_it != mesh_data.d_scalar_fields.end()) {
-                const auto& values = var_it->second;
-
-                std::vector< double > ivalues(values.size());
-                std::transform(values.begin(), values.end(), ivalues.begin(), [](double d) { return static_cast<double>(d); });
-                // Vectorized weighted sum computation
-                var.putVar_all( ivalues.data() );
-            } else {
-                // Check if it's an integer variable
-                auto ivar_it = mesh_data.i_scalar_fields.find(var.getName());
-                if (ivar_it != mesh_data.i_scalar_fields.end()) {
-                    const auto& values = ivar_it->second;
-
-                    var.putVar_all( values.data() );
-                }
-            }
-
-            if( request.verbose )
-            {
-                LOG( INFO ) << "Wrote NetCDF variable " << var.getName() << " to " << output_file;
-            }
-            return MB_SUCCESS;
-        };
 
         auto vars = out.getVars();
-
         for( const auto& name : request.scalar_var_names )
         {
-            for (const auto& v : vars) {
-                if (v.first == name) {
-                    MB_CHK_ERR( write_variable( v.second ) );
+            for (const auto& ncvar : vars) {
+                if (ncvar.first == name) {
+                    const auto& variable = ncvar.second;
+                    if (variable.getType() == PnetCDF::ncmpiFloat) {
+                        MB_CHK_ERR( write_variable<float>( variable, mesh_data ) );
+                    } else if (variable.getType() == PnetCDF::ncmpiDouble) {
+                        MB_CHK_ERR( write_variable<double>( variable, mesh_data ) );
+                    } else if (variable.getType() == PnetCDF::ncmpiInt) {
+                        MB_CHK_ERR( write_variable<int>( variable, mesh_data ) );
+                    } else if (variable.getType() == PnetCDF::ncmpiShort) {
+                        MB_CHK_ERR( write_variable<short>( variable, mesh_data ) );
+                    } else if (variable.getType() == PnetCDF::ncmpiByte) {
+                        MB_CHK_ERR( write_variable<signed char>( variable, mesh_data ) );
+                    } else {
+                        MB_SET_ERR( MB_FAILURE, "Unsupported variable type for NetCDF write" );
+                    }
+
+                    if( request.verbose )
+                    {
+                        LOG( INFO ) << "Wrote NetCDF variable " << ncvar.first << " to " << output_file;
+                    }
                 }
             }
         }
