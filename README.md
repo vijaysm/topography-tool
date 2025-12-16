@@ -27,6 +27,8 @@ The motivation for the disk averaging algorithm in **mbda** is also to support o
 - `--square-fields <square_fields_str>`: Comma-separated quadratic field names to remap (e.g., stored as `<field>_squared`)
 - `--remap-method <remap_method>`: Remapping method: da (ALG_DISKAVERAGE) or nn (ALG_NEAREST_NEIGHBOR). *Default: da*
 - `--spectral`: Assume that the target mesh requires online spectral element mesh treatment. *Default: false*
+- `--reuse-source-mesh`: Skip loading a separate target mesh and reuse the cached source point cloud (self-smoothing workflows). Requires `--smoothing-area` and NetCDF inputs.
+- `--smoothing-area <km2>`: Disk area (in square kilometers) used for averaging when reusing the source mesh. Determines the search radius for self-remapping kernels.
 - `--verbose,v`: Enable verbose output with timestamps. *Default: false*
 
 NOTE: If the target mesh file extension and output data file extension need to match. i.e., if target is ne256np4.h5m, then the output file has to be ne256np4_remapped.h5m.
@@ -108,18 +110,26 @@ With USGS-topo-cube3000.nc source grid, we will now have to create a Kd-tree for
 ./mbda --target grids/ne256np4_latlon_c20190127.nc --source grids/USGS-topo-cube3000.nc  --output remapped_data_da.nc --fields terr,SGH30 --square-fields terr
 ```
 
-### Test 4
+### Test 4 – Self-smoothing on the source grid
 
-FVtoFV map:  TERR and TERR^2
-- map fields from GMTED2010_7.5_stitch_S5P_OPER_REF_DEM_15_NCL_24-3.r172800x86400.nc   to itself, using a 3.3km disk average.
-- could also map to some MOAB grid with a similar resolution - like a cubed-sphere grid with 250m resolution.  This would be a one-time operation, generating TERR and TERR_3km
-- if we can get this to work, then we can use the 3.3km smoothed data on the GMTED2010 grid, and we would no longer need the cube3000 grid.
+FV→FV map where the source and target are identical (e.g., GMTED2010_7.5_stitch_S5P_OPER_REF_DEM_15_NCL_24-3 remapped to itself with a 3.3 km disk average). This workflow now leverages the cached point cloud directly instead of instantiating a new MOAB mesh:
 
-<u>**CURRENTLY UNSUPPORTED**:</u> This feature may require a refactor as we always explicitly load the target mesh. So if the target mesh is the massive RLL dataset, then the single node memory may not entirely suffice, or even index access into a `172800*86400*3=44B` double coordinate array in memory. It will require storing the target mesh as a logical tensor-product mesh as well, and hence requires some deeper changes.
+1. Use `--reuse-source-mesh` so the reader exposes a transparent point-cloud view of the source coordinates/areas. No new vertices or tags are created, which keeps the memory footprint manageable even for $10^{10}$-point grids.
+2. Provide `--smoothing-area` to control the constant disk radius used for averaging. This value determines the kernel size in km$^2$ for the scalar remapper.
+3. Supply the usual `--fields` / `--square-fields` lists; the reader will auto-generate `<field>_squared` data if requested so the smoother can remap mean and variance in one pass.
+4. When writing results, the NetCDF helper copies the original file to the output path and rewrites the existing variables in-place—no extra MOAB tags or new NetCDF variables are created. This matches the smoothing workflow’s requirement to simply overwrite the original variables with smoothed data.
 
-<u>**IDEA**:</u> One approach would be to check if the source and target mesh are the same, in which case, we can internally use the same mesh representation (or even the same reference) underneath to iterate over the elements/vertices of the mesh. This would simplify the workflow and can reuse the efficient representation of the mesh with no extra cost.
+Example:
 
-We would also need to add a new command-line parameter here that takes a constant area factor to be applied to every source point to compute the disk averaging. This way, one could compute the smoothing of the source mesh, and also compute projections onto other FV grids above as well by ignoring/overriding the area parameter in the target mesh.
+```bash
+./mbda --source grids/GMTED2010_7.5_stitch_S5P_OPER_REF_DEM_15_NCL_24-3.nc \
+       --target grids/GMTED2010_7.5_stitch_S5P_OPER_REF_DEM_15_NCL_24-3.nc \
+       --output GMTED2010_smoothed.nc \
+       --fields htopo --square-fields htopo \
+       --reuse-source-mesh --smoothing-area 7.4e-8
+```
+
+You can substitute any other FV target at similar resolution by omitting `--reuse-source-mesh`; in that case the classic mesh-loading path and NetCDF writer remain unchanged. The smoothing area of $7.4e-8$ km$^2$ corresponds to approximately a 3km disk radius (since $7.4e-8$ steradians on the unit sphere implies $r = \sqrt{7.4e-8 \times 6371^2 / \pi}$ km with radius of Earth taken as 6371 km).
 
 ## License
 
