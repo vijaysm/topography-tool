@@ -21,17 +21,11 @@ std::string resolve_or_default( const std::string& value, const std::string& fal
     return value.empty() ? fallback : value;
 }
 
-template <typename T>
-std::vector< float > convert_to_float( const std::vector< T >& input )
+template <typename T, typename U>
+void convert_to_type( const std::vector< T >& input, std::vector< U >& output )
 {
-    std::vector< float > output( input.size() );
-    std::transform( input.begin(), input.end(), output.begin(), []( T val ) { return static_cast< float >( val ); } );
-    return output;
-}
-
-std::vector< float > convert_to_float( const std::vector< float >& input )
-{
-    return input;
+    output.resize( input.size(), U(0) );
+    std::transform( input.begin(), input.end(), output.begin(), []( T val ) { return static_cast< U >( val ); } );
 }
 
 }  // namespace
@@ -104,10 +98,11 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
 
 namespace
 {
-ErrorCode fetch_tag_as_float( Interface* mb,
+template<typename T>
+ErrorCode fetch_tag_as_type( Interface* mb,
                               Tag tag,
                               const std::vector< EntityHandle >& entities,
-                              std::vector< float >& values )
+                              std::vector< T >& values )
 {
     DataType type;
     MB_CHK_ERR( mb->tag_get_data_type( tag, type ) );
@@ -118,16 +113,18 @@ ErrorCode fetch_tag_as_float( Interface* mb,
     {
         case MB_TYPE_DOUBLE:
         {
-            std::vector< double > buffer( count );
-            MB_CHK_ERR( mb->tag_get_data( tag, entities.data(), count, buffer.data() ) );
-            values = convert_to_float( buffer );
+            // std::vector< double > buffer( count );
+            // MB_CHK_ERR( mb->tag_get_data( tag, entities.data(), count, buffer.data() ) );
+            // convert_to_type( buffer, values );
+            values.resize( count );
+            MB_CHK_ERR( mb->tag_get_data( tag, entities.data(), count, values.data() ) );
             return MB_SUCCESS;
         }
         case MB_TYPE_INTEGER:
         {
             std::vector< int > buffer( count );
             MB_CHK_ERR( mb->tag_get_data( tag, entities.data(), count, buffer.data() ) );
-            values = convert_to_float( buffer );
+            convert_to_type( buffer, values );
             return MB_SUCCESS;
         }
         default:
@@ -416,7 +413,11 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
         dims.push_back( dim );
 
         auto define_variable = [&]( const std::string& var_name ) {
-            out.addVar( var_name, PnetCDF::ncmpiFloat, dims );
+            if constexpr ( std::is_same_v<TagValueType, float>) {
+                out.addVar( var_name, PnetCDF::ncmpiFloat, dims );
+            } else {
+                out.addVar( var_name, PnetCDF::ncmpiDouble, dims );
+            }
         };
 
         for( const auto& name : request.scalar_var_names )
@@ -430,8 +431,8 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
             Tag tag = 0;
             MB_CHK_SET_ERR( mb->tag_get_handle( var_name.c_str(), tag ), "Failed to get tag for " << var_name );
 
-            std::vector< float > values;
-            MB_CHK_ERR( fetch_tag_as_float( mb, tag, entities, values ) );
+            std::vector< TagValueType > values;
+            MB_CHK_ERR( fetch_tag_as_type<TagValueType>( mb, tag, entities, values ) );
 
             PnetCDF::NcmpiVar var = out.getVar( var_name );
             var.putVar_all( values.data() );

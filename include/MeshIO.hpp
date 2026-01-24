@@ -10,6 +10,8 @@
 namespace moab
 {
 
+typedef double TagValueType;
+
 struct NetcdfLoadOptions
 {
     std::string dimension_name = "ncol";
