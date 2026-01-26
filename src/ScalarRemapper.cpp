@@ -140,14 +140,14 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
 
 #pragma omp parallel for schedule(dynamic, 1) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
     for (size_t elem_idx = 0; elem_idx < point_data.size(); ++elem_idx) {
-        if ((elem_idx * 20) % point_data.size() == 0) {
+        if ((elem_idx * 100) % point_data.size() == 0) {
 #pragma omp critical
             LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(point_data.size()) ;
         }
 
         PointType3D gll_point;
         element_errors[elem_idx] = RLLtoXYZ_Deg(point_data.longitude(elem_idx), point_data.latitude(elem_idx), gll_point);
-        const double search_radius = std::sqrt(constant_area) * 180.0 / M_PI; // convert from radians^2 to degrees^2
+        const double search_radius = std::sqrt(constant_area / 4.0 / M_PI);
 
         // Initialize element-averaged values (thread-local)
         std::unordered_map<std::string, double> element_averages_d;
@@ -1126,7 +1126,7 @@ ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elem
 
     // const size_t nvars = m_config.scalar_var_names.size();
 
-#pragma omp parallel for schedule(dynamic, 1) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
+#pragma omp parallel for schedule(dynamic, 8) firstprivate(dG, dW) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
         if ((elem_idx  % (m_mesh_data.elements.size() / 10)) == 0) {
 #pragma omp critical
@@ -1352,8 +1352,6 @@ ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averag
     LOG(INFO) << "Performing topography projection with area averaging using " << point_data.size()
               << " point cloud points" ;
 
-    LOG(INFO) << "Processing " << m_mesh_data.elements.size() << " quadrilateral elements in parallel" ;
-
     // Parallel processing of mesh elements
     std::vector<ErrorCode> element_errors(m_mesh_data.elements.size(), MB_SUCCESS);
 
@@ -1368,9 +1366,10 @@ ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averag
     MB_CHK_ERR(m_interface->tag_get_handle("area", areaTag));
     MB_CHK_ERR(m_interface->tag_get_data(areaTag, m_mesh_data.elements.data(), m_mesh_data.elements.size(), vertex_areas.data()));
 
+    const size_t output_frequency = m_mesh_data.elements.size() / 10;
 #pragma omp parallel for schedule(dynamic, 1) shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config, m_interface, vertex_coords, vertex_areas)
     for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size(); ++elem_idx) {
-        if ((elem_idx * 20) % m_mesh_data.elements.size() == 0) {
+        if ( (elem_idx + 1) % output_frequency == 0) {
 #pragma omp critical
             LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " + std::to_string(m_mesh_data.elements.size()) ;
         }
@@ -1378,7 +1377,7 @@ ErrorCode PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averag
         // EntityHandle vertex = m_mesh_data.elements[elem_idx];
         PointType3D gll_point;
         std::copy_n(vertex_coords.data() + elem_idx * 3, 3, gll_point.begin());
-        const double search_radius = std::sqrt(vertex_areas[elem_idx]) * 180.0 / M_PI; // convert from radians^2 to degrees^2
+        const double search_radius = std::sqrt(vertex_areas[elem_idx] / 4.0 / M_PI); // convert from radians^2 to degrees^2
 
         // Initialize element-averaged values (thread-local)
         std::unordered_map<std::string, double> element_averages_d;
