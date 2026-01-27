@@ -1,3 +1,23 @@
+/**
+ * @file ParallelPointCloudReader.cpp
+ * @brief Implementation of parallel NetCDF point cloud reader for MOAB
+ *
+ * This file implements high-performance parallel reading of point cloud datasets
+ * from NetCDF files, supporting both structured grids (USGS format) and unstructured
+ * point clouds. The implementation uses Parallel-NetCDF for scalable I/O and includes
+ * sophisticated spatial decomposition for efficient data distribution.
+ *
+ * Key Implementation Features:
+ * - Parallel NetCDF I/O with PnetCDF for scalable reading
+ * - Automatic format detection and appropriate reading strategy selection
+ * - Memory-efficient chunked reading for large datasets
+ * - Thread-safe operations supporting OpenMP parallelism
+ * - Robust error handling and resource management
+ * - Spatial decomposition for MPI-based data distribution
+ *
+ * Author: MOAB Development Team
+ * Date: 2025
+ */
 
 #include <mpi.h>
 #include "easylogging.hpp"
@@ -12,8 +32,22 @@
 
 namespace moab {
 
+//===========================================================================
+// Utility Functions
+//===========================================================================
+
 namespace
 {
+/**
+ * @brief Convert source vector to double vector
+ *
+ * Utility function to convert any numeric type vector to double precision.
+ * Used for type conversion when reading scalar variables from NetCDF.
+ *
+ * @tparam SrcVec Source vector type
+ * @param input Input vector
+ * @param output Output double vector
+ */
 template <typename SrcVec>
 void copy_to_double_vector( const SrcVec& input, std::vector<double>& output )
 {
@@ -25,18 +59,48 @@ void copy_to_double_vector( const SrcVec& input, std::vector<double>& output )
 }
 }  // namespace
 
+//===========================================================================
+// Constructor and Destructor
+//===========================================================================
+
+/**
+ * @brief Constructor
+ *
+ * Initializes the ParallelPointCloudReader with MOAB interface and mesh set.
+ * Sets up default values for member variables.
+ *
+ * @param interface MOAB interface instance
+ * @param mesh_set Mesh set containing target elements
+ */
 ParallelPointCloudReader::ParallelPointCloudReader(Interface* interface, EntityHandle mesh_set)
     : m_interface(interface), m_mesh_set(mesh_set), m_ncfile(nullptr), m_total_points(0), m_is_usgs_format(false) {
 }
 
+/**
+ * @brief Destructor
+ *
+ * Cleans up NetCDF resources and releases file handles.
+ */
 ParallelPointCloudReader::~ParallelPointCloudReader() {
     cleanup_netcdf();
 }
 
-ErrorCode ParallelPointCloudReader::configure(const ReadConfig& config) {
-    // initialize the configuration parameters
-    m_config = config;
+//===========================================================================
+// Configuration and Initialization
+//===========================================================================
 
+/**
+ * @brief Configure the reader with user parameters
+ *
+ * Sets up the configuration parameters for reading operations.
+ * This method should be called before any reading operations.
+ *
+ * @param config Configuration parameters
+ * @return MB_SUCCESS on success
+ */
+ErrorCode ParallelPointCloudReader::configure(const ReadConfig& config) {
+    // Store configuration parameters
+    m_config = config;
 
     return MB_SUCCESS;
 }
@@ -59,8 +123,7 @@ ErrorCode ParallelPointCloudReader::initialize_netcdf() {
             return MB_FAILURE;
         }
 
-        // Choose reading strategy based on file format and configuration
-        // Detect file format
+        // Detect file format and set up reading strategy
         MB_CHK_ERR(detect_netcdf_format());
 
         return moab::MB_SUCCESS;
@@ -73,51 +136,15 @@ ErrorCode ParallelPointCloudReader::initialize_netcdf() {
 
 ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
     try {
-        // Store all variables in a map first
+        // Load all variables and dimensions from the NetCDF file
         const std::multimap<std::string, PnetCDF::NcmpiDim> dims_map = m_ncfile->getDims();
         const std::multimap<std::string, PnetCDF::NcmpiVar> vars_map = m_ncfile->getVars();
 
-        // Store all variables for later access
+        // Store all variables for efficient access
         for (const auto& var_pair : vars_map) {
             m_vars[var_pair.first] = var_pair.second;
         }
 
-        // Check if format detection should be bypassed
-        if (false) { // m_config.bypass_format_detection
-            LOG(INFO) << "Format detection bypassed - using user-specified coordinate variables" ;
-
-            if (m_config.coord_var_names.size() < 2) {
-                LOG(ERROR) << "Error: Must specify at least 2 coordinate variables when bypassing format detection" ;
-                return MB_FAILURE;
-            }
-
-            lon_var_name = m_config.coord_var_names[0];
-            lat_var_name = m_config.coord_var_names[1];
-            m_is_usgs_format = false;  // Treat as unstructured
-
-            // Get total points from coordinate variable
-            if (m_vars.count(lon_var_name)) {
-                PnetCDF::NcmpiVar coord_var = m_vars.at(lon_var_name);
-                m_total_points = 1;
-                for (const auto& dim : coord_var.getDims()) {
-                    m_total_points *= dim.getSize();
-                }
-
-                // For 1D arrays, set nlons to total points
-                if (coord_var.getDimCount() == 1) {
-                    nlats = 1;
-                    nlons = m_total_points;
-                } else if (coord_var.getDimCount() == 2) {
-                    nlats = coord_var.getDims()[0].getSize();
-                    nlons = coord_var.getDims()[1].getSize();
-                }
-            }
-
-            LOG(INFO) << "Using coordinate variables: " << lon_var_name << ", " << lat_var_name ;
-            LOG(INFO) << "Total points: " << m_total_points ;
-
-            return MB_SUCCESS;
-        }
 
         LOG(INFO) << "Detecting NetCDF format..." ;
         LOG(INFO) << "NetCDF file has " << dims_map.size() << " dimensions and " << vars_map.size() << " variables" ;
@@ -386,16 +413,45 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
 
 
+//===========================================================================
+// Coordinate Reading Methods
+//===========================================================================
+
+/**
+ * @brief Read coordinate data chunk from NetCDF file
+ *
+ * Reads a chunk of coordinate data (longitude and latitude) from the NetCDF file
+ * using parallel I/O. Handles both structured grids (USGS format) and unstructured
+ * point clouds with appropriate dimension handling.
+ *
+ * Algorithm:
+ * 1. Get coordinate variable handles
+ * 2. Determine variable dimensions and reading strategy
+ * 3. Set up parallel I/O parameters (start, count)
+ * 4. Read data using PnetCDF parallel operations
+ * 5. Convert to PointType format
+ *
+ * Reading Strategies:
+ * - Structured Grid: Read from 1D arrays, compute 2D coordinates
+ * - Unstructured: Read directly from 1D coordinate arrays
+ *
+ * @param start_idx Starting index for chunk
+ * @param count Number of points to read
+ * @param coords Output coordinate array [lon, lat] pairs
+ * @return MB_SUCCESS on success, MB_FAILURE on error
+ */
 ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, size_t count,
                                    std::vector<PointType>& coords) {
 
+    // Validate coordinate variable configuration
     if (m_config.coord_var_names.size() < 2) return MB_FAILURE;
 
     try {
+        // Get coordinate variable handles
         PnetCDF::NcmpiVar x_var = m_vars.at(m_config.coord_var_names[0]);
         PnetCDF::NcmpiVar y_var = m_vars.at(m_config.coord_var_names[1]);
 
-        // Check variable dimensions to determine proper reading strategy
+        // Analyze variable dimensions to determine reading strategy
         int x_ndims = x_var.getDimCount();
         int y_ndims = y_var.getDimCount();
 
@@ -403,6 +459,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                   << " (dims=" << x_ndims << "), " << m_config.coord_var_names[1]
                   << " (dims=" << y_ndims << ")" ;
 
+        // Set up parallel I/O parameters
         std::vector<MPI_Offset> start, read_count;
 
         if (x_ndims == 1 && y_ndims == 1) {
@@ -412,7 +469,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                 // USGS format: lon and lat are separate 1D arrays defining a grid
                 // Need to convert linear index to 2D grid indices
 
-                // Get dimension sizes
+                // Get dimension sizes and validate
                 PnetCDF::NcmpiDim lat_dim = m_ncfile->getDim(lat_var_name);
                 PnetCDF::NcmpiDim lon_dim = m_ncfile->getDim(lon_var_name);
                 assert( nlats - lat_dim.getSize() == 0);
@@ -423,46 +480,54 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
                 // Read entire coordinate arrays (they are 1D and relatively small)
                 std::vector<CoordinateType> lats(nlats), lons(nlons);
 
+                // Set up parallel I/O parameters for coordinate arrays
                 std::vector<MPI_Offset> lat_start = {static_cast<MPI_Offset>(nlats_start)};
                 std::vector<MPI_Offset> lat_count = {static_cast<MPI_Offset>(nlats_count)};
                 std::vector<MPI_Offset> lon_start = {static_cast<MPI_Offset>(nlons_start)};
                 std::vector<MPI_Offset> lon_count = {static_cast<MPI_Offset>(nlons_count)};
 
-                y_var.getVar_all(lat_start, lat_count, lats.data());  // lat
-                x_var.getVar_all(lon_start, lon_count, lons.data());  // lon
+                // Read coordinate data using parallel NetCDF
+                y_var.getVar_all(lat_start, lat_count, lats.data());  // latitude
+                x_var.getVar_all(lon_start, lon_count, lons.data());  // longitude
 
                 // Generate coordinate pairs for the requested chunk
+                // Convert linear index to 2D grid indices: Index(ilat, ilon) = ilat * nlon + ilon
                 coords.resize(count);
                 for (size_t i = 0; i < count; ++i) {
                     size_t global_idx = start_idx + i;
-                    size_t lat_idx = global_idx / nlons;  // Row index
-                    size_t lon_idx = global_idx % nlons;  // Column index
+                    size_t lat_idx = global_idx / nlons;  // Row index (latitude)
+                    size_t lon_idx = global_idx % nlons;  // Column index (longitude)
 
                     if (lat_idx < nlats && lon_idx < nlons) {
                         coords[i] = {lons[lon_idx], lats[lat_idx]};
                     } else {
-                        LOG(INFO) << "Error: Point " << global_idx << " is out of bounds" ;
-                        coords[i] = {0.0, 0.0};  // Out of bounds
+                        LOG(WARNING) << "Point " << global_idx << " is out of bounds" ;
+                        coords[i] = {0.0, 0.0};  // Default for out of bounds
                     }
                 }
-                // // For USGS format, store the 1D lat/lon arrays instead of generating all pairs
-                // // This saves memory for large grids
-                // coords.resize(nlats_count * nlons_count);
-
-                // // Store just the 1D arrays - they will be populated in read_local_chunk_distributed
-                // // Here we just create placeholder coordinates for size tracking
-                // size_t coord_idx = 0;
-                // for (MPI_Offset ilat = 0; ilat < nlats_count; ++ilat) {
-                //     for (MPI_Offset ilon = 0; ilon < nlons_count; ++ilon) {
-                //         coords[coord_idx++] = {0.0, 0.0};  // Placeholder
-                //     }
-                // }
 
                 return MB_SUCCESS;
+
             } else {
-                // Standard 1D coordinate arrays - point-by-point coordinates
+                // Standard format: 1D coordinate arrays for unstructured point cloud
+                // Each coordinate array has the same length as the number of points
+
+                LOG(INFO) << "Reading unstructured point cloud coordinates" ;
+
+                // Set up parallel I/O parameters for 1D arrays
                 start = {static_cast<MPI_Offset>(start_idx)};
                 read_count = {static_cast<MPI_Offset>(count)};
+
+        std::vector<CoordinateType> x_coords(count), y_coords(count);
+        x_var.getVar_all(start, read_count, x_coords.data());
+        y_var.getVar_all(start, read_count, y_coords.data());
+
+        coords.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+            coords[i] = {x_coords[i], y_coords[i]};
+        }
+        return MB_SUCCESS;
+
             }
         } else if (x_ndims == 2 && y_ndims == 2) {
             // 2D coordinate arrays - need to handle ni/nj indexing
@@ -502,22 +567,28 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(size_t start_idx, siz
             return MB_FAILURE;
         }
 
-        std::vector<CoordinateType> x_coords(count), y_coords(count);
-        x_var.getVar_all(start, read_count, x_coords.data());
-        y_var.getVar_all(start, read_count, y_coords.data());
-
-        coords.resize(count);
-        for (size_t i = 0; i < count; ++i) {
-            coords[i] = {x_coords[i], y_coords[i]};
-        }
-        return MB_SUCCESS;
-
     } catch (const std::exception& e) {
         LOG(ERROR) << "Error reading coordinates: " << e.what() ;
         return MB_FAILURE;
     }
 }
+//===========================================================================
+// Scalar Variable Reading Methods
+//===========================================================================
 
+/**
+ * @brief Template method to read scalar variable chunk
+ *
+ * Reads a chunk of scalar data from a NetCDF variable using parallel I/O.
+ * This template method supports both double and integer data types.
+ *
+ * @tparam T Data type (double or int)
+ * @param var_name Variable name in NetCDF file
+ * @param start_idx Starting index for chunk
+ * @param count Number of values to read
+ * @param data Output data array
+ * @return MB_SUCCESS on success, MB_FAILURE on error
+ */
 template<typename T>
 ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string& var_name, size_t start_idx,
                                        size_t count, std::vector<T>& data) {
@@ -546,6 +617,8 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
             read_count = {static_cast<MPI_Offset>(count)};
 
             data.resize(count);
+
+        // Read data using parallel NetCDF
             var.getVar_all(start, read_count, data.data());
 
         } else if (ndims == 2) {
@@ -621,7 +694,7 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(const std::string
 
         return MB_SUCCESS;
     } catch (const std::exception& e) {
-        LOG(ERROR) << "Error reading scalar variable '" << var_name << "': " << e.what() ;
+        LOG(ERROR) << "Error reading scalar variable '" << var_name << "': " << e.what();
         return MB_FAILURE;
     }
 }
@@ -799,6 +872,26 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_points(PointData& points) {
     return MB_SUCCESS;
 }
 
+/**
+ * @brief Build MOAB mesh from point cloud data
+ *
+ * Creates MOAB vertices from point cloud coordinates and assigns
+ * scalar data as MOAB tags. This method converts the internal
+ * point cloud representation to MOAB entities.
+ *
+ * Algorithm:
+ * 1. Create MOAB vertices for each point
+ * 2. Create MOAB tags for each scalar variable
+ * 3. Assign scalar data to vertices using tags
+ * 4. Create vertex set and add to mesh set
+ *
+ * @param points Input point cloud data
+ * @param mb MOAB interface instance
+ * @param mesh_set Target mesh set
+ * @param entities Output vector of created entity handles
+ * @param default_area Default area for each point
+ * @return MB_SUCCESS on success, MB_FAILURE on error
+ */
 ErrorCode ParallelPointCloudReader::build_mesh_from_point_cloud(const PointData& points,
                                           Interface* mb,
                                           EntityHandle mesh_set,
