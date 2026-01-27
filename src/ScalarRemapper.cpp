@@ -938,9 +938,11 @@ ScalarRemapper::find_nearest_point(
         PointType3D query_pt = {lon, lat, 0.0};
 
         if (search_radius > 0.0) {
+            // Here, search radius is in radians. Need to convert to degrees
+            search_radius = search_radius * RAD_TO_DEG;
             // Radius search within specified distance
             size_t num_matches = m_grid_locator->radiusSearch(
-                query_pt, search_radius, ret_matches);
+                query_pt, search_radius, ret_matches, false);
             if (num_matches == 0) {
                 ret_matches.push_back(
                     nanoflann::ResultItem<size_t, CoordinateType>(
