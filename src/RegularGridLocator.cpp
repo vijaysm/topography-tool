@@ -2,10 +2,10 @@
  * @file RegularGridLocator.cpp
  * @brief Implementation of fast spatial queries for regular lat/lon grids
  *
- * This file implements spatial indexing for structured latitude/longitude grids,
- * providing O(1) radius and k-nearest neighbor searches without the overhead
- * of building a KD-tree. The implementation handles spherical geometry,
- * longitude wraparound, and pole special cases.
+ * This file implements spatial indexing for structured latitude/longitude
+ * grids, providing O(1) radius and k-nearest neighbor searches without the
+ * overhead of building a KD-tree. The implementation handles spherical
+ * geometry, longitude wraparound, and pole special cases.
  *
  * Key Features:
  * - O(1) spatial queries for regular grids
@@ -18,11 +18,11 @@
  * Date: 2025
  */
 
-#include "easylogging.hpp"
 #include "RegularGridLocator.hpp"
+#include "easylogging.hpp"
 #include <cmath>
-#include <limits>
 #include <iostream>
+#include <limits>
 
 namespace moab {
 
@@ -43,11 +43,11 @@ namespace moab {
  *
  * @throws std::runtime_error if lat/lon arrays are empty
  */
-RegularGridLocator::RegularGridLocator(const std::vector<double>& lats,
-                                       const std::vector<double>& lons,
+RegularGridLocator::RegularGridLocator(const std::vector<double> &lats,
+                                       const std::vector<double> &lons,
                                        DistanceMetric metric)
-    : m_lats(lats), m_lons(lons), m_nlat(lats.size()), m_nlon(lons.size()), m_metric(metric)
-{
+    : m_lats(lats), m_lons(lons), m_nlat(lats.size()), m_nlon(lons.size()),
+      m_metric(metric) {
     // Validate input
     if (m_nlat == 0 || m_nlon == 0) {
         throw std::runtime_error("RegularGridLocator: Empty lat/lon arrays");
@@ -68,7 +68,8 @@ RegularGridLocator::RegularGridLocator(const std::vector<double>& lats,
               << " grid, lat[" << m_lat_min << ", " << m_lat_max << "] lon["
               << m_lon_min << ", " << m_lon_max << "]";
     LOG(INFO) << "  Average spacing: dlat=" << m_dlat << " dlon=" << m_dlon;
-    LOG(INFO) << "  Distance metric: " << (m_metric == HAVERSINE ? "Haversine" : "Euclidean L2");
+    LOG(INFO) << "  Distance metric: "
+              << (m_metric == HAVERSINE ? "Haversine" : "Euclidean L2");
 }
 
 //===========================================================================
@@ -86,8 +87,10 @@ RegularGridLocator::RegularGridLocator(const std::vector<double>& lats,
  */
 double RegularGridLocator::normalize_longitude(double lon) const {
     // Normalize to [m_lon_min, m_lon_min + 360) range
-    while (lon < m_lon_min) lon += 360.0;
-    while (lon >= m_lon_min + 360.0) lon -= 360.0;
+    while (lon < m_lon_min)
+        lon += 360.0;
+    while (lon >= m_lon_min + 360.0)
+        lon -= 360.0;
     return lon;
 }
 
@@ -104,7 +107,8 @@ double RegularGridLocator::normalize_longitude(double lon) const {
  * @param lat2 Latitude of second point (degrees)
  * @return Distance in degrees (angular distance)
  */
-double RegularGridLocator::haversine_distance(double lon1, double lat1, double lon2, double lat2) const {
+double RegularGridLocator::haversine_distance(double lon1, double lat1,
+                                              double lon2, double lat2) const {
     // Convert to radians
     double lat1_rad = lat1 * DEG_TO_RAD;
     double lat2_rad = lat2 * DEG_TO_RAD;
@@ -113,8 +117,8 @@ double RegularGridLocator::haversine_distance(double lon1, double lat1, double l
 
     // Haversine formula: a = sin²(Δφ/2) + cos φ1 ⋅ cos φ2 ⋅ sin²(Δλ/2)
     double a = std::sin(dlat / 2.0) * std::sin(dlat / 2.0) +
-               std::cos(lat1_rad) * std::cos(lat2_rad) *
-               std::sin(dlon / 2.0) * std::sin(dlon / 2.0);
+               std::cos(lat1_rad) * std::cos(lat2_rad) * std::sin(dlon / 2.0) *
+                   std::sin(dlon / 2.0);
     double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
 
     // Return distance in degrees (angular distance)
@@ -134,13 +138,16 @@ double RegularGridLocator::haversine_distance(double lon1, double lat1, double l
  * @param lat2 Latitude of second point (degrees)
  * @return Euclidean distance in degrees
  */
-double RegularGridLocator::euclidean_distance(double lon1, double lat1, double lon2, double lat2) const {
+double RegularGridLocator::euclidean_distance(double lon1, double lat1,
+                                              double lon2, double lat2) const {
     double dlon = lon2 - lon1;
     double dlat = lat2 - lat1;
 
     // Handle longitude wraparound: choose shorter path
-    if (dlon > 180.0) dlon -= 360.0;
-    if (dlon < -180.0) dlon += 360.0;
+    if (dlon > 180.0)
+        dlon -= 360.0;
+    if (dlon < -180.0)
+        dlon += 360.0;
 
     return std::sqrt(dlon * dlon + dlat * dlat);
 }
@@ -157,7 +164,8 @@ double RegularGridLocator::euclidean_distance(double lon1, double lat1, double l
  * @param lat2 Latitude of second point (degrees)
  * @return Distance in degrees
  */
-double RegularGridLocator::compute_distance(double lon1, double lat1, double lon2, double lat2) const {
+double RegularGridLocator::compute_distance(double lon1, double lat1,
+                                            double lon2, double lat2) const {
     if (m_metric == HAVERSINE) {
         return haversine_distance(lon1, lat1, lon2, lat2);
     } else {
@@ -180,13 +188,16 @@ double RegularGridLocator::compute_distance(double lon1, double lat1, double lon
  * @param value Coordinate value to find
  * @return Index of nearest coordinate
  */
-size_t RegularGridLocator::find_nearest_index(const std::vector<double>& coords, double value) const {
+size_t RegularGridLocator::find_nearest_index(const std::vector<double> &coords,
+                                              double value) const {
     // Binary search for insertion point
     auto it = std::lower_bound(coords.begin(), coords.end(), value);
 
     // Handle edge cases
-    if (it == coords.begin()) return 0;
-    if (it == coords.end()) return coords.size() - 1;
+    if (it == coords.begin())
+        return 0;
+    if (it == coords.end())
+        return coords.size() - 1;
 
     // Check which neighbor is closer
     size_t idx = std::distance(coords.begin(), it);
@@ -218,10 +229,11 @@ size_t RegularGridLocator::find_nearest_index(const std::vector<double>& coords,
  * @param ilon_max Output: maximum longitude index
  * @param wraps_around Output: true if longitude range wraps around
  */
-void RegularGridLocator::get_search_bounds(double query_lon, double query_lat, double radius,
-                                           size_t& ilat_min, size_t& ilat_max,
-                                           size_t& ilon_min, size_t& ilon_max,
-                                           bool& wraps_around) const {
+void RegularGridLocator::get_search_bounds(double query_lon, double query_lat,
+                                           double radius, size_t &ilat_min,
+                                           size_t &ilat_max, size_t &ilon_min,
+                                           size_t &ilon_max,
+                                           bool &wraps_around) const {
     wraps_around = false;
 
     // Normalize query longitude to grid range
@@ -235,11 +247,13 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat, d
     ilat_max = find_nearest_index(m_lats, lat_search_max);
 
     // Longitude bounds with wraparound handling
-    // At high latitudes, longitude spacing becomes compressed due to convergence
-    // Use a conservative estimate: radius / cos(lat) to account for this
+    // At high latitudes, longitude spacing becomes compressed due to
+    // convergence Use a conservative estimate: radius / cos(lat) to account for
+    // this
     double lat_rad = std::abs(query_lat) * DEG_TO_RAD;
-    double lon_radius = (std::abs(query_lat) < 89.0) ?
-                       radius / std::max(0.01, std::cos(lat_rad)) : 180.0;
+    double lon_radius = (std::abs(query_lat) < 90.0)
+                            ? radius / std::max(0.01, std::cos(lat_rad))
+                            : 180.0;
 
     double lon_search_min = query_lon - lon_radius;
     double lon_search_max = query_lon + lon_radius;
@@ -278,15 +292,17 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat, d
  * @param matches Output vector of (index, distance_squared) pairs
  * @return Number of matches found
  */
-size_t RegularGridLocator::radiusSearch(const PointType3D& query_point,
-                                       CoordinateType radius,
-                                       std::vector<nanoflann::ResultItem<size_t, CoordinateType>>& matches) const {
+size_t RegularGridLocator::radiusSearch(
+    const PointType3D &query_point, CoordinateType radius,
+    std::vector<nanoflann::ResultItem<size_t, CoordinateType>> &matches,
+    bool sorted) const {
     matches.clear();
 
     CoordinateType query_lon = query_point[0];
     CoordinateType query_lat = query_point[1];
 
-    // Special case: if query is at pole, all longitude values at pole are equidistant
+    // Special case: if query is at pole, all longitude values at pole are
+    // equidistant
     if (is_at_pole(query_lat)) {
         // Find the latitude index closest to the pole
         size_t pole_ilat = (query_lat > 0) ? m_nlat - 1 : 0;
@@ -307,7 +323,8 @@ size_t RegularGridLocator::radiusSearch(const PointType3D& query_point,
     // Get search bounds for efficient querying
     size_t ilat_min, ilat_max, ilon_min, ilon_max;
     bool wraps_around;
-    get_search_bounds(query_lon, query_lat, radius, ilat_min, ilat_max, ilon_min, ilon_max, wraps_around);
+    get_search_bounds(query_lon, query_lat, radius, ilat_min, ilat_max,
+                      ilon_min, ilon_max, wraps_around);
 
     // Search within computed bounds
     for (size_t ilat = ilat_min; ilat <= ilat_max; ++ilat) {
@@ -318,36 +335,45 @@ size_t RegularGridLocator::radiusSearch(const PointType3D& query_point,
             // Search all longitudes (wraparound case)
             for (size_t ilon = 0; ilon < m_nlon; ++ilon) {
                 CoordinateType grid_lon = m_lons[ilon];
-                CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                CoordinateType dist =
+                    compute_distance(query_lon, query_lat, grid_lon, grid_lat);
 
                 if (dist <= radius) {
                     size_t idx = get_linear_index(ilat, ilon);
                     matches.push_back({idx, dist * dist});
 
-                    // If this latitude is at pole, we only need one longitude value
-                    if (lat_at_pole) break;
+                    // If this latitude is at pole, we only need one longitude
+                    // value
+                    if (lat_at_pole)
+                        break;
                 }
             }
         } else {
             // Search limited longitude range
             for (size_t ilon = ilon_min; ilon <= ilon_max; ++ilon) {
                 CoordinateType grid_lon = m_lons[ilon];
-                CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                CoordinateType dist =
+                    compute_distance(query_lon, query_lat, grid_lon, grid_lat);
 
                 if (dist <= radius) {
                     size_t idx = get_linear_index(ilat, ilon);
                     matches.push_back({idx, dist * dist});
 
-                    // If this latitude is at pole, we only need one longitude value
-                    if (lat_at_pole) break;
+                    // If this latitude is at pole, we only need one longitude
+                    // value
+                    if (lat_at_pole)
+                        break;
                 }
             }
         }
     }
 
     // Sort results by distance (ascending order)
-    std::sort(matches.begin(), matches.end(),
-              [](const auto& a, const auto& b) { return a.second < b.second; });
+    if (sorted) {
+        std::sort(
+            matches.begin(), matches.end(),
+            [](const auto &a, const auto &b) { return a.second < b.second; });
+    }
 
     return matches.size();
 }
@@ -372,10 +398,10 @@ size_t RegularGridLocator::radiusSearch(const PointType3D& query_point,
  * @param indices Output array of k indices (filled with -1 if not found)
  * @param distances_sq Output array of k squared distances
  */
-void RegularGridLocator::knnSearch(const PointType3D& query_point,
-                                  size_t k,
-                                  size_t* indices,
-                                  CoordinateType* distances_sq) const {
+void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
+                                   size_t *indices,
+                                   CoordinateType *distances_sq,
+                                   bool sorted) const {
     CoordinateType query_lon = query_point[0];
     CoordinateType query_lat = query_point[1];
 
@@ -400,9 +426,12 @@ void RegularGridLocator::knnSearch(const PointType3D& query_point,
 
         // If we need more neighbors, expand search to adjacent latitudes
         if (k > 1 && pole_ilat > 0) {
-            for (size_t ilat = pole_ilat - 1; max_heap.size() < k && ilat < m_nlat; --ilat) {
-                for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
-                    CoordinateType dist = compute_distance(query_lon, query_lat, m_lons[ilon], m_lats[ilat]);
+            for (size_t ilat = pole_ilat - 1;
+                 max_heap.size() < k && ilat < m_nlat; --ilat) {
+                for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k;
+                     ++ilon) {
+                    CoordinateType dist = compute_distance(
+                        query_lon, query_lat, m_lons[ilon], m_lats[ilat]);
                     size_t index = get_linear_index(ilat, ilon);
                     max_heap.push({dist * dist, index});
                 }
@@ -419,10 +448,14 @@ void RegularGridLocator::knnSearch(const PointType3D& query_point,
 
         while (max_heap.size() < k && radius < max_radius) {
             // Search ring at current radius
-            for (int dlat = -static_cast<int>(radius); dlat <= static_cast<int>(radius); ++dlat) {
-                for (int dlon = -static_cast<int>(radius); dlon <= static_cast<int>(radius); ++dlon) {
-                    // Only process perimeter of ring (skip interior for efficiency)
-                    if (radius > 0 && std::abs(dlat) < static_cast<int>(radius) &&
+            for (int dlat = -static_cast<int>(radius);
+                 dlat <= static_cast<int>(radius); ++dlat) {
+                for (int dlon = -static_cast<int>(radius);
+                     dlon <= static_cast<int>(radius); ++dlon) {
+                    // Only process perimeter of ring (skip interior for
+                    // efficiency)
+                    if (radius > 0 &&
+                        std::abs(dlat) < static_cast<int>(radius) &&
                         std::abs(dlon) < static_cast<int>(radius)) {
                         continue;
                     }
@@ -431,15 +464,19 @@ void RegularGridLocator::knnSearch(const PointType3D& query_point,
                     int ilon = static_cast<int>(ilon_start) + dlon;
 
                     // Handle latitude bounds (no wraparound)
-                    if (ilat < 0 || ilat >= static_cast<int>(m_nlat)) continue;
+                    if (ilat < 0 || ilat >= static_cast<int>(m_nlat))
+                        continue;
 
                     // Handle longitude wraparound
-                    while (ilon < 0) ilon += m_nlon;
-                    while (ilon >= static_cast<int>(m_nlon)) ilon -= m_nlon;
+                    while (ilon < 0)
+                        ilon += m_nlon;
+                    while (ilon >= static_cast<int>(m_nlon))
+                        ilon -= m_nlon;
 
                     CoordinateType grid_lon = m_lons[ilon];
                     CoordinateType grid_lat = m_lats[ilat];
-                    CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+                    CoordinateType dist = compute_distance(query_lon, query_lat,
+                                                           grid_lon, grid_lat);
                     CoordinateType dist_sq = dist * dist;
 
                     size_t idx = get_linear_index(ilat, ilon);
@@ -465,7 +502,9 @@ void RegularGridLocator::knnSearch(const PointType3D& query_point,
     }
 
     // Reverse to get ascending order (nearest first)
-    std::reverse(results.begin(), results.end());
+    if (sorted) {
+        std::reverse(results.begin(), results.end());
+    }
 
     // Fill output arrays with found neighbors
     size_t n = std::min(k, results.size());

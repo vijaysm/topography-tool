@@ -1,27 +1,34 @@
 #ifndef REGULAR_GRID_LOCATOR_HPP
 #define REGULAR_GRID_LOCATOR_HPP
 
-#include <vector>
+#include "ParallelPointCloudReader.hpp"
+#include "nanoflann.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
-#include <algorithm>
 #include <queue>
-#include "nanoflann.hpp"
-#include "ParallelPointCloudReader.hpp"
+#include <vector>
 
 namespace moab {
+
+// Constants
+static constexpr double EARTH_RADIUS_KM = 6371.0;
+static constexpr double DEG_TO_RAD = M_PI / 180.0;
+static constexpr double RAD_TO_DEG = 180.0 / M_PI;
+static constexpr double POLE_TOLERANCE = 1e-6; // Degrees from pole
 
 /**
  * @brief Fast spatial query for regular lat/lon grids
  *
- * Exploits the structured nature of regular grids to provide O(1) spatial queries
- * without the overhead of building a KD-tree. Thread-safe for parallel queries.
+ * Exploits the structured nature of regular grids to provide O(1) spatial
+ * queries without the overhead of building a KD-tree. Thread-safe for parallel
+ * queries.
  */
 class RegularGridLocator {
-public:
+  public:
     enum DistanceMetric {
-        HAVERSINE,      // Great circle distance on sphere (accurate)
-        EUCLIDEAN_L2    // Euclidean distance in lat/lon space (fast approximation)
+        HAVERSINE,   // Great circle distance on sphere (accurate)
+        EUCLIDEAN_L2 // Euclidean distance in lat/lon space (fast approximation)
     };
 
     /**
@@ -31,12 +38,12 @@ public:
      * @param lons Longitude values (degrees, typically 0 to 360 or -180 to 180)
      * @param metric Distance metric to use for queries
      *
-     * Data is assumed to be organized as nlat*nlon with longitude changing fastest:
-     * Index(ilat, ilon) = ilat * nlon + ilon
+     * Data is assumed to be organized as nlat*nlon with longitude changing
+     * fastest: Index(ilat, ilon) = ilat * nlon + ilon
      */
-    RegularGridLocator(const std::vector<double>& lats,
-                       const std::vector<double>& lons,
-                       DistanceMetric metric = HAVERSINE);
+    RegularGridLocator(const std::vector<double> &lats,
+                       const std::vector<double> &lons,
+                       DistanceMetric metric = EUCLIDEAN_L2);
 
     /**
      * @brief Radius search - find all points within given radius
@@ -46,9 +53,10 @@ public:
      * @param matches Output vector of (index, distance_squared) pairs
      * @return Number of matches found
      */
-    size_t radiusSearch(const PointType3D& query_point,
-                       CoordinateType radius,
-                       std::vector<nanoflann::ResultItem<size_t, CoordinateType>>& matches) const;
+    size_t radiusSearch(
+        const PointType3D &query_point, CoordinateType radius,
+        std::vector<nanoflann::ResultItem<size_t, CoordinateType>> &matches,
+        bool sorted = false) const;
 
     /**
      * @brief K nearest neighbor search
@@ -58,10 +66,8 @@ public:
      * @param indices Output array of k indices
      * @param distances_sq Output array of k squared distances
      */
-    void knnSearch(const PointType3D& query_point,
-                  size_t k,
-                  size_t* indices,
-                  CoordinateType* distances_sq) const;
+    void knnSearch(const PointType3D &query_point, size_t k, size_t *indices,
+                   CoordinateType *distances_sq, bool sorted = false) const;
 
     /**
      * @brief Get total number of points in grid
@@ -71,43 +77,41 @@ public:
     /**
      * @brief Get grid dimensions
      */
-    void get_dimensions(size_t& nlat, size_t& nlon) const {
+    void get_dimensions(size_t &nlat, size_t &nlon) const {
         nlat = m_nlat;
         nlon = m_nlon;
     }
 
-private:
+  private:
     // Grid data
-    std::vector<double> m_lats;  // Latitude values
-    std::vector<double> m_lons;  // Longitude values
+    std::vector<double> m_lats; // Latitude values
+    std::vector<double> m_lons; // Longitude values
     size_t m_nlat, m_nlon;
 
     // Grid bounds and spacing
     double m_lat_min, m_lat_max;
     double m_lon_min, m_lon_max;
-    double m_dlat, m_dlon;  // Average spacing
+    double m_dlat, m_dlon; // Average spacing
 
     DistanceMetric m_metric;
-
-    // Constants
-    static constexpr double EARTH_RADIUS_KM = 6371.0;
-    static constexpr double DEG_TO_RAD = M_PI / 180.0;
-    static constexpr double POLE_TOLERANCE = 1e-6;  // Degrees from pole
 
     /**
      * @brief Compute distance between two points based on selected metric
      */
-    double compute_distance(double lon1, double lat1, double lon2, double lat2) const;
+    double compute_distance(double lon1, double lat1, double lon2,
+                            double lat2) const;
 
     /**
      * @brief Compute Haversine (great circle) distance in degrees
      */
-    double haversine_distance(double lon1, double lat1, double lon2, double lat2) const;
+    double haversine_distance(double lon1, double lat1, double lon2,
+                              double lat2) const;
 
     /**
      * @brief Compute Euclidean L2 distance in lat/lon space
      */
-    double euclidean_distance(double lon1, double lat1, double lon2, double lat2) const;
+    double euclidean_distance(double lon1, double lat1, double lon2,
+                              double lat2) const;
 
     /**
      * @brief Convert 2D grid indices to linear index
@@ -119,7 +123,8 @@ private:
     /**
      * @brief Convert linear index to 2D grid indices
      */
-    inline void get_grid_indices(size_t linear_idx, size_t& ilat, size_t& ilon) const {
+    inline void get_grid_indices(size_t linear_idx, size_t &ilat,
+                                 size_t &ilon) const {
         ilat = linear_idx / m_nlon;
         ilon = linear_idx % m_nlon;
     }
@@ -141,14 +146,14 @@ private:
      * Handles wraparound and pole special cases
      */
     void get_search_bounds(double query_lon, double query_lat, double radius,
-                          size_t& ilat_min, size_t& ilat_max,
-                          size_t& ilon_min, size_t& ilon_max,
-                          bool& wraps_around) const;
+                           size_t &ilat_min, size_t &ilat_max, size_t &ilon_min,
+                           size_t &ilon_max, bool &wraps_around) const;
 
     /**
      * @brief Find nearest grid index for a given coordinate value
      */
-    size_t find_nearest_index(const std::vector<double>& coords, double value) const;
+    size_t find_nearest_index(const std::vector<double> &coords,
+                              double value) const;
 };
 
 } // namespace moab
