@@ -14,8 +14,8 @@
  * - Handles longitude wraparound and pole special cases
  * - Efficient spiral search for k-nearest neighbors
  *
- * Author: MOAB Development Team
- * Date: 2025
+ * Author: Vijay Mahadevan
+ * Date: 2025-2026
  */
 
 #include "RegularGridLocator.hpp"

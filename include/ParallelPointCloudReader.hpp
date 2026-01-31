@@ -3,9 +3,9 @@
  * @brief Efficient parallel NetCDF point cloud reader for MOAB
  *
  * This header defines a high-performance parallel NetCDF reader for point cloud
- * datasets, supporting both structured grids (USGS format) and unstructured point
- * clouds. The implementation uses Parallel-NetCDF for scalable I/O and includes
- * sophisticated spatial decomposition for efficient data distribution.
+ * datasets, supporting both structured grids (USGS format) and unstructured
+ * point clouds. The implementation uses Parallel-NetCDF for scalable I/O and
+ * includes sophisticated spatial decomposition for efficient data distribution.
  *
  * Key Features:
  * - Parallel NetCDF I/O with PnetCDF for scalable reading
@@ -16,27 +16,27 @@
  * - Coordinate system transformations (lon/lat to Cartesian)
  * - Thread-safe operations for OpenMP parallelism
  *
- * Author: MOAB Development Team
- * Date: 2025
+ * Author: Vijay Mahadevan
+ * Date: 2025-2026
  */
 
 #ifndef PARALLEL_POINT_CLOUD_READER_HPP
 #define PARALLEL_POINT_CLOUD_READER_HPP
 
+#include "moab/CartVect.hpp"
 #include "moab/Core.hpp"
 #include "moab/Range.hpp"
-#include "moab/CartVect.hpp"
 #ifdef MOAB_HAVE_PNETCDF
 #include <pnetcdf>
 #else
 #error Need to build MOAB with Parallel-NetCDF for NetCDF I/O
 #endif
-#include <vector>
-#include <string>
-#include <unordered_set>
-#include <unordered_map>
-#include <memory>
 #include <array>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace moab {
 
@@ -46,8 +46,8 @@ namespace moab {
 
 /// Type aliases for coordinate systems and data types
 typedef double CoordinateType;
-typedef std::array<CoordinateType, 3> PointType3D;  // 3D Cartesian coordinates
-typedef std::array<CoordinateType, 2> PointType;     // 2D lon/lat coordinates
+typedef std::array<CoordinateType, 3> PointType3D; // 3D Cartesian coordinates
+typedef std::array<CoordinateType, 2> PointType;   // 2D lon/lat coordinates
 
 /// Numerical tolerance for coordinate comparisons
 static constexpr CoordinateType ReferenceTolerance = 1e-12;
@@ -64,19 +64,19 @@ static constexpr CoordinateType ReferenceTolerance = 1e-12;
  * @param coordinates Output 3D Cartesian coordinates [x, y, z]
  * @return MB_SUCCESS on success
  */
-template<typename T>
-inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, T* coordinates) {
+template <typename T>
+inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, T *coordinates) {
     // Convert to radians
     T lon_rad = lon_deg * M_PI / 180.0;
     T lat_rad = lat_deg * M_PI / 180.0;
 
     // Spherical to Cartesian transformation
     T cos_lat = cos(lat_rad);
-    coordinates[0] = cos_lat * cos(lon_rad);  // x = cos(lat) * cos(lon)
-    coordinates[1] = cos_lat * sin(lon_rad);  // y = cos(lat) * sin(lon)
-    coordinates[2] = sin(lat_rad);            // z = sin(lat)
+    coordinates[0] = cos_lat * cos(lon_rad); // x = cos(lat) * cos(lon)
+    coordinates[1] = cos_lat * sin(lon_rad); // y = cos(lat) * sin(lon)
+    coordinates[2] = sin(lat_rad);           // z = sin(lat)
 
-    return MB_SUCCESS;
+    return;
 }
 
 /**
@@ -87,11 +87,10 @@ inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, T* coordinates) {
  * @param lon_deg Longitude in degrees
  * @param lat_deg Latitude in degrees
  * @param coordinates Output 3D Cartesian coordinates array
- * @return MB_SUCCESS on success
  */
-template<typename T>
-inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coordinates) {
-    return RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
+template <typename T>
+inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3> &coordinates) {
+    RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
 }
 
 /**
@@ -105,12 +104,12 @@ inline moab::ErrorCode RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3>& coor
  * @param lat_deg Output latitude in degrees [-90, 90]
  * @return MB_SUCCESS on success
  */
-template<typename SType, typename T>
-inline moab::ErrorCode XYZtoRLL_Deg(const SType* coordinates, T & lon_deg, T & lat_deg) {
+template <typename SType, typename T>
+inline void XYZtoRLL_Deg(const SType *coordinates, T &lon_deg, T &lat_deg) {
     // Normalize to unit sphere
     SType dMag = std::sqrt(coordinates[0] * coordinates[0] +
-                          coordinates[1] * coordinates[1] +
-                          coordinates[2] * coordinates[2]);
+                           coordinates[1] * coordinates[1] +
+                           coordinates[2] * coordinates[2]);
     SType x = coordinates[0] / dMag;
     SType y = coordinates[1] / dMag;
     SType z = coordinates[2] / dMag;
@@ -135,9 +134,8 @@ inline moab::ErrorCode XYZtoRLL_Deg(const SType* coordinates, T & lon_deg, T & l
         lat_deg = -90.0;
     }
 
-    return moab::MB_SUCCESS;
+    return;
 }
-
 
 //===========================================================================
 // Main ParallelPointCloudReader Class
@@ -176,7 +174,7 @@ inline moab::ErrorCode XYZtoRLL_Deg(const SType* coordinates, T & lon_deg, T & l
  * - OpenMP parallelism can be exploited in data processing sections
  */
 class ParallelPointCloudReader {
-public:
+  public:
     //=======================================================================
     // Type Definitions and Data Structures
     //=======================================================================
@@ -191,12 +189,13 @@ public:
      * when detecting duplicate points in unstructured point clouds.
      */
     struct PointHash {
-        std::size_t operator()(const PointType& p) const {
+        std::size_t operator()(const PointType &p) const {
             // Quantize to 7 decimal places (~1cm precision)
             long long lon_int = static_cast<long long>(p[0] * 1e7);
             long long lat_int = static_cast<long long>(p[1] * 1e7);
             // Combine hashes using bit manipulation
-            return std::hash<long long>{}(lon_int) ^ (std::hash<long long>{}(lat_int) << 1);
+            return std::hash<long long>{}(lon_int) ^
+                   (std::hash<long long>{}(lat_int) << 1);
         }
     };
 
@@ -207,8 +206,8 @@ public:
      * across MPI ranks. Supports expansion for overlapping regions.
      */
     struct BoundingBox {
-        PointType min_coords;  // [min_lon, min_lat]
-        PointType max_coords;  // [max_lon, max_lat]
+        PointType min_coords; // [min_lon, min_lat]
+        PointType max_coords; // [max_lon, max_lat]
 
         BoundingBox() {
             min_coords.fill(std::numeric_limits<CoordinateType>::max());
@@ -238,9 +237,10 @@ public:
          * @param lonlat_point Point to test [lon, lat]
          * @return true if point is inside bounding box
          */
-        bool contains(const PointType& lonlat_point) const {
+        bool contains(const PointType &lonlat_point) const {
             for (int i = 0; i < DIM; ++i) {
-                if (lonlat_point[i] < min_coords[i] || lonlat_point[i] > max_coords[i]) {
+                if (lonlat_point[i] < min_coords[i] ||
+                    lonlat_point[i] > max_coords[i]) {
                     return false;
                 }
             }
@@ -261,7 +261,8 @@ public:
      * - Unstructured: Explicit coordinate arrays
      *
      * Memory Layout:
-     * - Structured: lat[ilat], lon[ilon] with Index(ilat,ilon) = ilat*nlon + ilon
+     * - Structured: lat[ilat], lon[ilon] with Index(ilat,ilon) = ilat*nlon +
+     * ilon
      * - Unstructured: coords[idx] = [lon, lat] for each point
      */
     struct PointData {
@@ -273,8 +274,8 @@ public:
         std::vector<PointType> lonlat_coordinates;
 
         /// Structured grids: 1D coordinate arrays (USGS format)
-        std::vector<CoordinateType> longitudes;  // 1D longitude array
-        std::vector<CoordinateType> latitudes;   // 1D latitude array
+        std::vector<CoordinateType> longitudes; // 1D longitude array
+        std::vector<CoordinateType> latitudes;  // 1D latitude array
 
         //===================================================================
         // Scalar Data Storage
@@ -309,7 +310,8 @@ public:
          * @return Total point count
          */
         size_t size() const {
-            if (is_structured_grid && !latitudes.empty() && !longitudes.empty()) {
+            if (is_structured_grid && !latitudes.empty() &&
+                !longitudes.empty()) {
                 return latitudes.size() * longitudes.size();
             }
             return lonlat_coordinates.size();
@@ -330,8 +332,8 @@ public:
         /**
          * @brief Get longitude at global index
          *
-         * For structured grids: computes from 1D arrays (longitude moves fastest)
-         * For unstructured: reads from explicit storage
+         * For structured grids: computes from 1D arrays (longitude moves
+         * fastest) For unstructured: reads from explicit storage
          *
          * @param global_idx Global point index
          * @return Longitude in degrees
@@ -348,8 +350,8 @@ public:
         /**
          * @brief Get latitude at global index
          *
-         * For structured grids: computes from 1D arrays (longitude moves fastest)
-         * For unstructured: reads from explicit storage
+         * For structured grids: computes from 1D arrays (longitude moves
+         * fastest) For unstructured: reads from explicit storage
          *
          * @param global_idx Global point index
          * @return Latitude in degrees
@@ -381,7 +383,7 @@ public:
          * @param nlat Output: number of latitude points
          * @param nlon Output: number of longitude points
          */
-        void get_grid_dimensions(size_t& nlat, size_t& nlon) const {
+        void get_grid_dimensions(size_t &nlat, size_t &nlon) const {
             if (is_structured_grid) {
                 nlat = latitudes.size();
                 nlon = longitudes.size();
@@ -424,11 +426,13 @@ public:
 
     // struct PointCloudMeshView {
 
-    //     explicit PointCloudMeshView(const PointData& refpoints, double default_area) : points(refpoints), area(default_area) {
+    //     explicit PointCloudMeshView(const PointData& refpoints, double
+    //     default_area) : points(refpoints), area(default_area) {
 
     //     }
 
-    //     ErrorCode cartesian_coords(size_t index, PointType3D& point3d) const {
+    //     ErrorCode cartesian_coords(size_t index, PointType3D& point3d) const
+    //     {
     //         auto lon = points.longitude( index );
     //         auto lat = points.latitude( index );
     //         MB_CHK_SET_ERR( RLLtoXYZ_Deg( lon, lat, point3d ),
@@ -493,7 +497,7 @@ public:
      * @param interface MOAB interface instance
      * @param mesh_set Mesh set containing target elements
      */
-    ParallelPointCloudReader(Interface* interface, EntityHandle mesh_set);
+    ParallelPointCloudReader(Interface *interface, EntityHandle mesh_set);
 
     /**
      * @brief Destructor - cleans up NetCDF resources
@@ -506,7 +510,7 @@ public:
      * @param config Configuration parameters
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode configure(const ReadConfig& config);
+    ErrorCode configure(const ReadConfig &config);
 
     /**
      * @brief Main reading interface - loads point cloud data
@@ -517,14 +521,14 @@ public:
      * @param points Output container for point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_points(PointData& points);
+    ErrorCode read_points(PointData &points);
 
     /**
      * @brief Get current configuration
      *
      * @return Current ReadConfig instance
      */
-    const ReadConfig& get_config() const { return m_config; }
+    const ReadConfig &get_config() const { return m_config; }
 
     /**
      * @brief Check if cached point cloud data is available
@@ -538,7 +542,7 @@ public:
      *
      * @return Reference to cached PointData
      */
-    const PointData& cached_point_cloud() const { return m_cached_points; }
+    const PointData &cached_point_cloud() const { return m_cached_points; }
 
     /**
      * @brief Build MOAB mesh from point cloud data
@@ -553,10 +557,9 @@ public:
      * @param default_area Default area for each point
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode build_mesh_from_point_cloud(const PointData& points,
-                                          Interface* mb,
-                                          EntityHandle mesh_set,
-                                          std::vector<EntityHandle>& entities,
+    ErrorCode build_mesh_from_point_cloud(const PointData &points,
+                                          Interface *mb, EntityHandle mesh_set,
+                                          std::vector<EntityHandle> &entities,
                                           double default_area) const;
 
     //=======================================================================
@@ -577,7 +580,8 @@ public:
      * @param var_sizes Output: list of variable sizes
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode get_variable_info(std::vector<std::string>& var_names, std::vector<size_t>& var_sizes);
+    ErrorCode get_variable_info(std::vector<std::string> &var_names,
+                                std::vector<size_t> &var_sizes);
 
     /**
      * @brief Check if the loaded file is USGS format
@@ -586,13 +590,13 @@ public:
      */
     bool is_usgs_format() const { return m_is_usgs_format; }
 
-private:
+  private:
     //=======================================================================
     // Member Variables
     //=======================================================================
 
     /// MOAB interface instance
-    Interface* m_interface;
+    Interface *m_interface;
 
     /// Mesh set containing target elements
     EntityHandle m_mesh_set;
@@ -601,7 +605,7 @@ private:
     ReadConfig m_config;
 
     /// NetCDF file handle for parallel I/O
-    PnetCDF::NcmpiFile* m_ncfile;
+    PnetCDF::NcmpiFile *m_ncfile;
 
     /// NetCDF variable handles for efficient access
     std::unordered_map<std::string, PnetCDF::NcmpiVar> m_vars;
@@ -611,8 +615,8 @@ private:
     bool m_have_cached_points = false;
 
     /// Dataset metadata
-    size_t m_total_points;           // Total points in dataset
-    bool m_is_usgs_format;           // True for USGS structured format
+    size_t m_total_points; // Total points in dataset
+    bool m_is_usgs_format; // True for USGS structured format
 
     /// USGS format specific metadata
     size_t nlats, nlons;             // Grid dimensions
@@ -659,7 +663,8 @@ private:
      * @param chunk_data Output container for chunk data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_chunk_parallel(size_t start_idx, size_t count, PointData& chunk_data);
+    ErrorCode read_chunk_parallel(size_t start_idx, size_t count,
+                                  PointData &chunk_data);
 
     /**
      * @brief Read coordinate data chunk
@@ -670,7 +675,7 @@ private:
      * @return MB_SUCCESS on success, error code otherwise
      */
     ErrorCode read_coordinates_chunk(size_t start_idx, size_t count,
-                                   std::vector<PointType>& coords);
+                                     std::vector<PointType> &coords);
 
     /**
      * @brief Template method to read scalar variable chunk
@@ -682,9 +687,10 @@ private:
      * @param data Output data array
      * @return MB_SUCCESS on success, error code otherwise
      */
-    template<typename T>
-    ErrorCode read_scalar_variable_chunk(const std::string& var_name, size_t start_idx,
-                                        size_t count, std::vector<T>& data);
+    template <typename T>
+    ErrorCode read_scalar_variable_chunk(const std::string &var_name,
+                                         size_t start_idx, size_t count,
+                                         std::vector<T> &data);
 
     //=======================================================================
     // Data Reading Methods
@@ -696,7 +702,7 @@ private:
      * @param points Output point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_all_data(PointData& points);
+    ErrorCode read_all_data(PointData &points);
 
     /**
      * @brief Read local chunk with distributed processing
@@ -706,7 +712,8 @@ private:
      * @param chunk_data Output chunk data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_local_chunk_distributed(size_t start_idx, size_t count, PointData& chunk_data);
+    ErrorCode read_local_chunk_distributed(size_t start_idx, size_t count,
+                                           PointData &chunk_data);
 
     //=======================================================================
     // Memory Management
@@ -718,7 +725,7 @@ private:
      * @param estimated_memory Output: estimated memory in bytes
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode estimate_memory_requirements(size_t& estimated_memory);
+    ErrorCode estimate_memory_requirements(size_t &estimated_memory);
 
     /**
      * @brief Optimize chunk size for memory efficiency
@@ -743,7 +750,8 @@ private:
      * @param operation Description of the operation
      * @return MB_FAILURE
      */
-    ErrorCode check_netcdf_error(const std::exception& e, const std::string& operation);
+    ErrorCode check_netcdf_error(const std::exception &e,
+                                 const std::string &operation);
 
     /**
      * @brief Convert lon/lat coordinates to Cartesian
@@ -751,14 +759,15 @@ private:
      * @param coordinates Input/output coordinates
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode convert_lonlat_to_cartesian(std::vector<PointType3D>& coordinates);
+    ErrorCode
+    convert_lonlat_to_cartesian(std::vector<PointType3D> &coordinates);
 
     /**
      * @brief Convert single lon/lat coordinate to Cartesian
      *
      * @param coord Input/output coordinate
      */
-    void convert_single_lonlat_to_cartesian(PointType3D& coord);
+    void convert_single_lonlat_to_cartesian(PointType3D &coord);
 
     /**
      * @brief Compute lon/lat bounding box from mesh
@@ -766,7 +775,7 @@ private:
      * @param lonlat_bbox Output bounding box
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode compute_lonlat_bounding_box_from_mesh(BoundingBox& lonlat_bbox);
+    ErrorCode compute_lonlat_bounding_box_from_mesh(BoundingBox &lonlat_bbox);
 
     //=======================================================================
     // Format Detection and Reading
@@ -785,7 +794,7 @@ private:
      * @param points Output point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_usgs_format(PointData& points);
+    ErrorCode read_usgs_format(PointData &points);
 
     /**
      * @brief Read standard format data (unstructured)
@@ -793,7 +802,7 @@ private:
      * @param points Output point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_standard_format(PointData& points);
+    ErrorCode read_standard_format(PointData &points);
 
     /**
      * @brief Implementation of standard format reading
@@ -801,7 +810,7 @@ private:
      * @param points Output point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_standard_format_impl(PointData& points);
+    ErrorCode read_standard_format_impl(PointData &points);
 
     /**
      * @brief Read data using chunked approach
@@ -809,10 +818,8 @@ private:
      * @param points Output point cloud data
      * @return MB_SUCCESS on success, error code otherwise
      */
-    ErrorCode read_points_chunked(PointData& points);
+    ErrorCode read_points_chunked(PointData &points);
 };
-
-
 
 } // namespace moab
 

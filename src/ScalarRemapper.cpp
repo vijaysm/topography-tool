@@ -18,6 +18,9 @@
  * - Support for both USGS and standard NetCDF formats
  * - Automatic handling of integer and double scalar fields
  * - Robust error handling and validation
+ *
+ * Author: Vijay Mahadevan
+ * Date: 2025-2026
  */
 
 #include "ScalarRemapper.hpp"
@@ -252,9 +255,8 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
 
         // Convert lon/lat to 3D Cartesian for KD-tree search
         PointType3D gll_point;
-        element_errors[elem_idx] =
-            RLLtoXYZ_Deg(point_data.longitude(elem_idx),
-                         point_data.latitude(elem_idx), gll_point);
+        RLLtoXYZ_Deg(point_data.longitude(elem_idx),
+                     point_data.latitude(elem_idx), gll_point);
 
         // Thread-local storage for KD-tree search results to avoid allocations
         thread_local std::vector<size_t> neighbor_indices;
