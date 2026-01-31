@@ -125,9 +125,6 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
                                                      const NetcdfLoadOptions& options,
                                                      std::vector< EntityHandle >& entities_out )
 {
-    // constexpr size_t MAX_ELEMENTS_PER_CHUNK = 500*1000*1000; // 500M elements, well below INT_MAX
-    constexpr size_t MAX_ELEMENTS_PER_CHUNK = 100*1000*1000; // 500M elements, well below INT_MAX
-
     // Validate input parameters
     if( nullptr == mb ) MB_SET_ERR( MB_FAILURE, "Invalid MOAB interface" );
 
@@ -156,10 +153,10 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
         PnetCDF::NcmpiVar area_var = nc.getVar( area_name );
 
         // Check if chunked reading is needed
-        bool use_chunked_reading = ncol > MAX_ELEMENTS_PER_CHUNK;
+        bool use_chunked_reading = ncol > NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
 
         if (use_chunked_reading) {
-            LOG(INFO) << "Using chunked reading for " << ncol << " points (exceeds " << MAX_ELEMENTS_PER_CHUNK << " limit)";
+            LOG(INFO) << "Using chunked reading for " << ncol << " points (exceeds " << NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK << " limit)";
         }
 
         // Prepare output entity vector
@@ -169,7 +166,7 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
         // Read coordinate and area data with chunked approach if needed
         if (use_chunked_reading) {
             // Calculate chunk size
-            size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+            size_t chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
             size_t num_chunks = (ncol + chunk_size - 1) / chunk_size;
 
             // LOG(INFO) << "Reading data in " << num_chunks << " chunks of up to " << chunk_size << " elements each";
@@ -179,7 +176,7 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
             for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
                 size_t current_count = std::min(chunk_size, static_cast<size_t>(ncol - current_start));
 
-                LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/" << num_chunks
+                LOG(INFO) << "Reading target chunk " << (chunk_idx + 1) << "/" << num_chunks
                          << " (elements " << current_start << " to " << (current_start + current_count - 1) << ")";
 
                 // Set up NetCDF hyperslab parameters for direct reading into main arrays
@@ -193,7 +190,7 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file( Interface* mb,
 
                 // Convert lon/lat to 3D Cartesian coordinates on unit sphere
                 std::vector<double> coords(3 * current_count);
-#pragma omp parallel for
+#pragma omp parallel for shared(lon, lat, coords, current_start, current_count)
                 for( size_t idx = current_start; idx < current_start + current_count; ++idx )
                 {
                     const size_t offset = (idx - current_start) * 3;
@@ -355,7 +352,7 @@ ErrorCode fetch_tag_as_type( Interface* mb,
  *
  * Chunked I/O Strategy:
  * - Large 2D variables are written in latitude chunks
- * - MAX_ELEMENTS_PER_CHUNK limits memory usage (250M elements)
+ * - NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK limits memory usage (250M elements)
  * - Prevents PnetCDF INT_MAX overflow errors
  *
  * Type Conversion:
@@ -387,9 +384,8 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
         {
             size_t dim0_size = dims[0].getSize();
             size_t dim1_size = dims[1].getSize();
-            const size_t MAX_ELEMENTS_PER_CHUNK = 250*1000*1000; // 250M elements, well below INT_MAX
             size_t current_start = 0;
-            size_t lat_chunk_size = MAX_ELEMENTS_PER_CHUNK / dim1_size;
+            size_t lat_chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK / dim1_size;
             std::vector<MPI_Offset> start, read_count;
 
             // Write data in latitude chunks to avoid memory limits
@@ -413,14 +409,13 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
         }
         else {
             // 1D variable - check if chunked writing is needed for large datasets
-            const size_t MAX_ELEMENTS_PER_CHUNK = 500*1000*1000; // 500M elements, well below INT_MAX
             size_t values_size = values.size();
 
-            if (values_size > MAX_ELEMENTS_PER_CHUNK) {
+            if (values_size > NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK) {
                 LOG(INFO) << "Using chunked writing for 1D variable '" << var.getName() << "' with " << values_size << " elements";
 
                 // Calculate chunk size
-                size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+                size_t chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
                 size_t num_chunks = (values_size + chunk_size - 1) / chunk_size;
 
                 LOG(INFO) << "Writing 1D variable in " << num_chunks << " chunks of up to " << chunk_size << " elements each";
@@ -460,9 +455,8 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
                 // 2D integer variable with chunked I/O
                 size_t dim0_size = dims[0].getSize();
                 size_t dim1_size = dims[1].getSize();
-                const size_t MAX_ELEMENTS_PER_CHUNK = 250*1000*1000; // 250M elements, well below INT_MAX
                 size_t current_start = 0;
-                size_t lat_chunk_size = MAX_ELEMENTS_PER_CHUNK / dim1_size;
+                size_t lat_chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK / dim1_size;
                 std::vector<MPI_Offset> start, read_count;
 
                 for (size_t lat_offset = 0; lat_offset < dim0_size; lat_offset += lat_chunk_size) {
@@ -489,14 +483,13 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
             }
             else {
                 // 1D integer variable - check if chunked writing is needed for large datasets
-                const size_t MAX_ELEMENTS_PER_CHUNK = 500*1000*1000; // 500M elements, well below INT_MAX
                 size_t values_size = values.size();
 
-                if (values_size > MAX_ELEMENTS_PER_CHUNK) {
+                if (values_size > NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK) {
                     LOG(INFO) << "Using chunked writing for 1D integer variable '" << var.getName() << "' with " << values_size << " elements";
 
                     // Calculate chunk size
-                    size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+                    size_t chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
                     size_t num_chunks = (values_size + chunk_size - 1) / chunk_size;
 
                     LOG(INFO) << "Writing 1D integer variable in " << num_chunks << " chunks of up to " << chunk_size << " elements each";
@@ -568,7 +561,7 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
  *
  * Memory Management:
  * - Chunked I/O prevents memory overflow for large 2D variables
- * - MAX_ELEMENTS_PER_CHUNK limits memory usage (250M elements)
+ * - NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK limits memory usage (250M elements)
  * - Automatic type conversion preserves precision
  *
  * @param mb MOAB interface instance (must be valid)
@@ -765,15 +758,14 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
             PnetCDF::NcmpiVar var = out.getVar( var_name );
 
             // Check if chunked writing is needed for large datasets
-            const size_t MAX_ELEMENTS_PER_CHUNK = 500*1000*1000; // 500M elements, well below INT_MAX
             size_t num_entities = values.size();
-            bool use_chunked_writing = num_entities > MAX_ELEMENTS_PER_CHUNK;
+            bool use_chunked_writing = num_entities > NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
 
             if (use_chunked_writing) {
-                LOG(INFO) << "Using chunked writing for " << num_entities << " entities (exceeds " << MAX_ELEMENTS_PER_CHUNK << " limit)";
+                LOG(INFO) << "Using chunked writing for " << num_entities << " entities (exceeds " << NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK << " limit)";
 
                 // Calculate chunk size
-                size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+                size_t chunk_size = NetcdfMeshIO::MAX_ELEMENTS_PER_CHUNK;
                 size_t num_chunks = (num_entities + chunk_size - 1) / chunk_size;
 
                 LOG(INFO) << "Writing " << var_name << " in " << num_chunks << " chunks of up to " << chunk_size << " elements each";

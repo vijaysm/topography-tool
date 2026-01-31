@@ -125,6 +125,9 @@ struct MeshData;
 class NetcdfMeshIO
 {
   public:
+
+    static constexpr size_t MAX_ELEMENTS_PER_CHUNK = 250*1000*1000; // 250M elements, well below INT_MAX
+
     /**
      * @brief Load point cloud from NetCDF file into MOAB mesh
      *
