@@ -588,9 +588,18 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
 
     try
     {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         std::filesystem::copy_file( template_file,
                                     output_file,
                                     std::filesystem::copy_options::overwrite_existing );
+
+        // Report writing time
+        auto copy_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() -
+                start_time);
+        LOG(INFO) << "Time taken to copy target template file: " << copy_time.count() << " milliseconds";
 
 // #pragma omp single
         {
@@ -715,9 +724,18 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file( Interface* mb,
 
     try
     {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         std::filesystem::copy_file( template_file,
                                     output_file,
                                     std::filesystem::copy_options::overwrite_existing );
+
+        // Report writing time
+        auto copy_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() -
+                start_time);
+        LOG(INFO) << "Time taken to copy target template file: " << copy_time.count() << " milliseconds";
 
         PnetCDF::NcmpiFile out( MPI_COMM_WORLD, output_file.c_str(), PnetCDF::NcmpiFile::write );
         PnetCDF::NcmpiDim dim = out.getDim( dim_name );
