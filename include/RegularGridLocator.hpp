@@ -28,7 +28,7 @@ class RegularGridLocator {
   public:
     enum DistanceMetric {
         HAVERSINE,   // Great circle distance on sphere (accurate)
-        EUCLIDEAN_L2 // Euclidean distance in lat/lon space (fast approximation)
+        EUCLIDEAN_L2 // Euclidean distance based on lat/lon space (fast approximation)
     };
 
     /**

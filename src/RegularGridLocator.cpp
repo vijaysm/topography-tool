@@ -140,16 +140,22 @@ double RegularGridLocator::haversine_distance(double lon1, double lat1,
  */
 double RegularGridLocator::euclidean_distance(double lon1, double lat1,
                                               double lon2, double lat2) const {
-    double dlon = lon2 - lon1;
-    double dlat = lat2 - lat1;
+    PointType3D p1, p2;
+    RLLtoXYZ_Deg(lon1, lat1, p1);
+    RLLtoXYZ_Deg(lon2, lat2, p2);
 
-    // Handle longitude wraparound: choose shorter path
-    if (dlon > 180.0)
-        dlon -= 360.0;
-    if (dlon < -180.0)
-        dlon += 360.0;
+    return std::sqrt((p2[0] - p1[0]) * (p2[0] - p1[0]) + (p2[1] - p1[1]) * (p2[1] - p1[1]) + (p2[2] - p1[2]) * (p2[2] - p1[2]));
 
-    return std::sqrt(dlon * dlon + dlat * dlat);
+    // double dlon = lon2 - lon1;
+    // double dlat = lat2 - lat1;
+
+    // // Handle longitude wraparound: choose shorter path
+    // if (dlon > 180.0)
+    //     dlon -= 360.0;
+    // if (dlon < -180.0)
+    //     dlon += 360.0;
+
+    // return std::sqrt(dlon * dlon + dlat * dlat);
 }
 
 /**

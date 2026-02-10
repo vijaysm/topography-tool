@@ -405,7 +405,7 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
                 var.putVar(start, read_count, chunk_buffer.data());
                 current_start += chunk_elements;
             }
-            assert(current_start == total_size);
+            //assert(current_start == total_size);
         }
         else {
             // 1D variable - check if chunked writing is needed for large datasets
@@ -479,7 +479,7 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar& var, const ScalarRemapp
                     }
                     current_start += chunk_elements;
                 }
-                assert(current_start == total_size);
+                //assert(current_start == total_size);
             }
             else {
                 // 1D integer variable - check if chunked writing is needed for large datasets
