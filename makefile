@@ -35,6 +35,9 @@ mbda: $(OBJ_FILES)
 
 run: all $(addprefix run-,$(ALLEXAMPLES))
 
+format:
+	find . -iname '*.hpp' -o -iname '*.cpp' | xargs clang-format -i --style=LLVM
+
 .dummy:
 	@mkdir -p .objs
 

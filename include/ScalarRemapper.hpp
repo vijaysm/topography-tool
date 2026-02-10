@@ -22,33 +22,33 @@ namespace moab {
  * @brief Point cloud adapter for nanoflann KD-tree
  */
 struct PointCloudAdapter {
-    // const std::vector<PointType>& latlon_points;
-    std::vector<CoordinateType> points;
+  // const std::vector<PointType>& latlon_points;
+  std::vector<CoordinateType> points;
 
-    PointCloudAdapter(const std::vector<PointType> &pts) //: latlon_points(pts)
-    {
-        points.resize(pts.size() * 3);
+  PointCloudAdapter(const std::vector<PointType> &pts) //: latlon_points(pts)
+  {
+    points.resize(pts.size() * 3);
 #pragma omp parallel for shared(pts, points)
-        for (size_t i = 0; i < pts.size(); ++i) {
-            size_t offset = i * 3;
-            RLLtoXYZ_Deg(pts[i][0], pts[i][1], points.data() + offset);
-        }
+    for (size_t i = 0; i < pts.size(); ++i) {
+      size_t offset = i * 3;
+      RLLtoXYZ_Deg(pts[i][0], pts[i][1], points.data() + offset);
     }
+  }
 
-    // Must return the number of data points
-    inline size_t kdtree_get_point_count() const { return points.size() / 3; }
+  // Must return the number of data points
+  inline size_t kdtree_get_point_count() const { return points.size() / 3; }
 
-    // Returns the dim'th component of the idx'th point in the class
-    inline CoordinateType kdtree_get_pt(const size_t idx,
-                                        const size_t dim) const {
-        return points[idx * 3 + dim];
-    }
+  // Returns the dim'th component of the idx'th point in the class
+  inline CoordinateType kdtree_get_pt(const size_t idx,
+                                      const size_t dim) const {
+    return points[idx * 3 + dim];
+  }
 
-    // Optional bounding-box computation: return false to default to a standard
-    // bbox computation loop
-    template <class BBOX> bool kdtree_get_bbox(BBOX & /* bb */) const {
-        return false;
-    }
+  // Optional bounding-box computation: return false to default to a standard
+  // bbox computation loop
+  template <class BBOX> bool kdtree_get_bbox(BBOX & /* bb */) const {
+    return false;
+  }
 };
 
 // Define the KD-tree type with explicit template parameters
@@ -72,119 +72,114 @@ typedef nanoflann::KDTreeSingleIndexAdaptor<
  * exploited for multicore performance.
  */
 class ScalarRemapper {
-  public:
-    struct RemapConfig {
-        std::vector<std::string> scalar_var_names; // Variables to remap
-        bool is_usgs_format = false; // Use USGS format for point cloud
-        bool use_kd_tree = false;    // Use KD-tree (true) or RegularGridLocator
-                                     // (false) for USGS format
-        RegularGridLocator::DistanceMetric distance_metric =
-            RegularGridLocator::HAVERSINE; // Distance metric for
-                                           // RegularGridLocator
-        // const ParallelPointCloudReader::PointCloudMeshView*
-        // target_point_cloud_view = nullptr;
-        bool reuse_source_mesh = false; // Reuse source mesh as target so that
-                                        // we can smoothen the data
-        double user_search_area =
-            0.0; // User-specified search area for smoothing
-    };
+public:
+  struct RemapConfig {
+    std::vector<std::string> scalar_var_names; // Variables to remap
+    bool is_usgs_format = false; // Use USGS format for point cloud
+    bool use_kd_tree = false;    // Use KD-tree (true) or RegularGridLocator
+                                 // (false) for USGS format
+    RegularGridLocator::DistanceMetric distance_metric =
+        RegularGridLocator::HAVERSINE; // Distance metric for
+                                       // RegularGridLocator
+    // const ParallelPointCloudReader::PointCloudMeshView*
+    // target_point_cloud_view = nullptr;
+    bool reuse_source_mesh = false; // Reuse source mesh as target so that
+                                    // we can smoothen the data
+    double user_search_area = 0.0;  // User-specified search area for smoothing
+  };
 
-    struct MeshData {
+  struct MeshData {
 
-        size_t size() const { return elements.size(); }
+    size_t size() const { return elements.size(); }
 
-        const PointType3D &centroid(size_t index) const {
-            return centroids[index];
-        }
+    const PointType3D &centroid(size_t index) const { return centroids[index]; }
 
-        std::vector<EntityHandle> elements; // Local mesh elements
-        std::vector<PointType3D> centroids; // Element centroids
-
-      public:
-        std::unordered_map<std::string, std::vector<double>>
-            d_scalar_fields; // Remapped data
-        std::unordered_map<std::string, std::vector<int>>
-            i_scalar_fields; // Remapped data
-    };
-
-    // Spectral element projection parameters: immutable for now
-    const int spectral_order = 4;     // Spectral element order (nP)
-    const bool continuous_gll = true; // Use continuous GLL nodes
-    const bool apply_bubble_correction =
-        false; // Apply bubble correction for mass conservation
-  protected:
-    Interface *m_interface;
-    EntityHandle m_mesh_set;
-    RemapConfig m_config;
-    MeshData m_mesh_data;
-    bool m_target_is_spectral;
-    bool m_self_remapping = false;
-    double m_user_search_area = 0.0; // User-specified search area for smoothing
+    std::vector<EntityHandle> elements; // Local mesh elements
+    std::vector<PointType3D> centroids; // Element centroids
 
   public:
-    ScalarRemapper(Interface *interface, EntityHandle mesh_set);
-    virtual ~ScalarRemapper() = default;
+    std::unordered_map<std::string, std::vector<double>>
+        d_scalar_fields; // Remapped data
+    std::unordered_map<std::string, std::vector<int>>
+        i_scalar_fields; // Remapped data
+  };
 
-    // Configuration
-    ErrorCode configure(const RemapConfig &config);
+  // Spectral element projection parameters: immutable for now
+  const int spectral_order = 4;     // Spectral element order (nP)
+  const bool continuous_gll = true; // Use continuous GLL nodes
+  const bool apply_bubble_correction =
+      false; // Apply bubble correction for mass conservation
+protected:
+  Interface *m_interface;
+  EntityHandle m_mesh_set;
+  RemapConfig m_config;
+  MeshData m_mesh_data;
+  bool m_target_is_spectral;
+  bool m_self_remapping = false;
+  double m_user_search_area = 0.0; // User-specified search area for smoothing
 
-    // Main remapping interface
-    ErrorCode
-    remap_scalars(const ParallelPointCloudReader::PointData &point_data);
+public:
+  ScalarRemapper(Interface *interface, EntityHandle mesh_set);
+  virtual ~ScalarRemapper() = default;
 
-    // Access results
-    const MeshData &get_mesh_data() const { return m_mesh_data; }
-    ErrorCode write_to_tags(const std::string &tag_prefix = "");
+  // Configuration
+  ErrorCode configure(const RemapConfig &config);
 
-  protected:
-    // Abstract method to be implemented by derived classes
-    virtual ErrorCode perform_remapping(
-        const ParallelPointCloudReader::PointData &point_data) = 0;
+  // Main remapping interface
+  ErrorCode
+  remap_scalars(const ParallelPointCloudReader::PointData &point_data);
 
-    // Abstract method to be implemented by derived classes
-    virtual ErrorCode perform_self_remapping(
-        const ParallelPointCloudReader::PointData &point_data);
-    ErrorCode smoothen_field_constant_area_averaging(
-        const ParallelPointCloudReader::PointData &point_data,
-        double constant_area);
+  // Access results
+  const MeshData &get_mesh_data() const { return m_mesh_data; }
+  ErrorCode write_to_tags(const std::string &tag_prefix = "");
 
-    // Utility methods
-    ErrorCode extract_mesh_centroids();
-    ErrorCode compute_element_centroid(EntityHandle element,
-                                       PointType3D &centroid);
+protected:
+  // Abstract method to be implemented by derived classes
+  virtual ErrorCode
+  perform_remapping(const ParallelPointCloudReader::PointData &point_data) = 0;
 
-    // Validation and statistics
-    ErrorCode validate_remapping_results();
-    void print_remapping_statistics();
+  // Abstract method to be implemented by derived classes
+  virtual ErrorCode
+  perform_self_remapping(const ParallelPointCloudReader::PointData &point_data);
+  ErrorCode smoothen_field_constant_area_averaging(
+      const ParallelPointCloudReader::PointData &point_data,
+      double constant_area);
 
-    std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
-    find_nearest_point(const PointType3D &target_point,
-                       const ParallelPointCloudReader::PointData &point_data,
-                       const size_t *max_neighbors = nullptr,
-                       const CoordinateType *search_radius = nullptr);
+  // Utility methods
+  ErrorCode extract_mesh_centroids();
+  ErrorCode compute_element_centroid(EntityHandle element,
+                                     PointType3D &centroid);
 
-    // Spatial query members: KD-tree or RegularGridLocator
-    std::unique_ptr<PointCloudAdapter> m_adapter;
-    std::unique_ptr<KDTree> m_kdtree;
-    std::unique_ptr<RegularGridLocator> m_grid_locator;
-    bool m_kdtree_built;
-    bool m_grid_locator_built;
+  // Validation and statistics
+  ErrorCode validate_remapping_results();
+  void print_remapping_statistics();
 
-    ErrorCode
-    build_kdtree(const ParallelPointCloudReader::PointData &point_data);
-    ErrorCode
-    build_grid_locator(const ParallelPointCloudReader::PointData &point_data);
+  std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
+  find_nearest_point(const PointType3D &target_point,
+                     const ParallelPointCloudReader::PointData &point_data,
+                     const size_t *max_neighbors = nullptr,
+                     const CoordinateType *search_radius = nullptr);
 
-    // Spatial search helper methods
-    std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
-    linear_search_fallback(
-        const PointType3D &target_point,
-        const ParallelPointCloudReader::PointData &point_data,
-        CoordinateType search_radius);
+  // Spatial query members: KD-tree or RegularGridLocator
+  std::unique_ptr<PointCloudAdapter> m_adapter;
+  std::unique_ptr<KDTree> m_kdtree;
+  std::unique_ptr<RegularGridLocator> m_grid_locator;
+  bool m_kdtree_built;
+  bool m_grid_locator_built;
 
-    std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
-    kdtree_search(const PointType3D &target_point, CoordinateType search_radius,
-                  size_t max_neighbors);
+  ErrorCode build_kdtree(const ParallelPointCloudReader::PointData &point_data);
+  ErrorCode
+  build_grid_locator(const ParallelPointCloudReader::PointData &point_data);
+
+  // Spatial search helper methods
+  std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
+  linear_search_fallback(const PointType3D &target_point,
+                         const ParallelPointCloudReader::PointData &point_data,
+                         CoordinateType search_radius);
+
+  std::vector<nanoflann::ResultItem<size_t, CoordinateType>>
+  kdtree_search(const PointType3D &target_point, CoordinateType search_radius,
+                size_t max_neighbors);
 };
 
 /**
@@ -195,13 +190,13 @@ class ScalarRemapper {
  * point clouds.
  */
 class NearestNeighborRemapper : public ScalarRemapper {
-  public:
-    NearestNeighborRemapper(Interface *interface, EntityHandle mesh_set);
-    ~NearestNeighborRemapper();
+public:
+  NearestNeighborRemapper(Interface *interface, EntityHandle mesh_set);
+  ~NearestNeighborRemapper();
 
-  protected:
-    ErrorCode perform_remapping(
-        const ParallelPointCloudReader::PointData &point_data) override;
+protected:
+  ErrorCode perform_remapping(
+      const ParallelPointCloudReader::PointData &point_data) override;
 };
 
 /**
@@ -213,40 +208,39 @@ class NearestNeighborRemapper : public ScalarRemapper {
  * in this class.
  */
 class PCDiskAveragedProjectionRemapper : public ScalarRemapper {
-  public:
-    PCDiskAveragedProjectionRemapper(Interface *interface,
-                                     EntityHandle mesh_set);
+public:
+  PCDiskAveragedProjectionRemapper(Interface *interface, EntityHandle mesh_set);
 
-  protected:
-    ErrorCode perform_remapping(
-        const ParallelPointCloudReader::PointData &point_data) override;
+protected:
+  ErrorCode perform_remapping(
+      const ParallelPointCloudReader::PointData &point_data) override;
 
-  private:
-    // Spectral element mesh validation
-    ErrorCode validate_quadrilateral_mesh();
+private:
+  // Spectral element mesh validation
+  ErrorCode validate_quadrilateral_mesh();
 
-    // Point cloud to spectral element projection
-    ErrorCode project_point_cloud_to_spectral_elements(
-        const ParallelPointCloudReader::PointData &point_data);
+  // Point cloud to spectral element projection
+  ErrorCode project_point_cloud_to_spectral_elements(
+      const ParallelPointCloudReader::PointData &point_data);
 
-    // Point cloud to target projection using disk-area averaging
-    ErrorCode project_point_cloud_with_area_averaging(
-        const ParallelPointCloudReader::PointData &point_data);
+  // Point cloud to target projection using disk-area averaging
+  ErrorCode project_point_cloud_with_area_averaging(
+      const ParallelPointCloudReader::PointData &point_data);
 };
 
 /**
  * @brief Factory class for creating remapping instances
  */
 class RemapperFactory {
-  public:
-    enum RemapMethod {
-        ALG_DISKAVERAGE, // Default: Point cloud disk averaged projection
-        ALG_NEAREST_NEIGHBOR
-    };
+public:
+  enum RemapMethod {
+    ALG_DISKAVERAGE, // Default: Point cloud disk averaged projection
+    ALG_NEAREST_NEIGHBOR
+  };
 
-    static std::unique_ptr<ScalarRemapper>
-    create_remapper(RemapMethod method, Interface *interface,
-                    EntityHandle mesh_set);
+  static std::unique_ptr<ScalarRemapper> create_remapper(RemapMethod method,
+                                                         Interface *interface,
+                                                         EntityHandle mesh_set);
 };
 
 } // namespace moab
