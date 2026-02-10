@@ -31,6 +31,7 @@
 #else
 #error Need to build MOAB with Parallel-NetCDF for NetCDF I/O
 #endif
+
 #include <array>
 #include <memory>
 #include <string>
@@ -38,104 +39,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "MBDAUtilities.hpp"
+
 namespace moab {
-
-//===========================================================================
-// Type Definitions and Utility Functions
-//===========================================================================
-
-/// Type aliases for coordinate systems and data types
-typedef double CoordinateType;
-typedef std::array<CoordinateType, 3> PointType3D; // 3D Cartesian coordinates
-typedef std::array<CoordinateType, 2> PointType;   // 2D lon/lat coordinates
-
-/// Numerical tolerance for coordinate comparisons
-static constexpr CoordinateType ReferenceTolerance = 1e-12;
-
-/**
- * @brief Convert longitude/latitude (degrees) to 3D Cartesian coordinates
- *
- * Projects geographic coordinates onto a unit sphere using spherical
- * coordinate transformation. This is useful for distance calculations
- * and spatial indexing.
- *
- * @param lon_deg Longitude in degrees
- * @param lat_deg Latitude in degrees
- * @param coordinates Output 3D Cartesian coordinates [x, y, z]
- * @return MB_SUCCESS on success
- */
-template <typename T>
-inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, T *coordinates) {
-  // Convert to radians
-  T lon_rad = lon_deg * M_PI / 180.0;
-  T lat_rad = lat_deg * M_PI / 180.0;
-
-  // Spherical to Cartesian transformation
-  T cos_lat = cos(lat_rad);
-  coordinates[0] = cos_lat * cos(lon_rad); // x = cos(lat) * cos(lon)
-  coordinates[1] = cos_lat * sin(lon_rad); // y = cos(lat) * sin(lon)
-  coordinates[2] = sin(lat_rad);           // z = sin(lat)
-
-  return;
-}
-
-/**
- * @brief Convert longitude/latitude (degrees) to 3D Cartesian coordinates
- *
- * Convenience wrapper using std::array interface.
- *
- * @param lon_deg Longitude in degrees
- * @param lat_deg Latitude in degrees
- * @param coordinates Output 3D Cartesian coordinates array
- */
-template <typename T>
-inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3> &coordinates) {
-  RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
-}
-
-/**
- * @brief Calculate latitude and longitude from 3D Cartesian coordinates
- *
- * Performs inverse spherical projection from Cartesian coordinates back
- * to geographic coordinates (degrees). Handles pole special cases.
- *
- * @param coordinates Input 3D Cartesian coordinates
- * @param lon_deg Output longitude in degrees [0, 360)
- * @param lat_deg Output latitude in degrees [-90, 90]
- * @return MB_SUCCESS on success
- */
-template <typename SType, typename T>
-inline void XYZtoRLL_Deg(const SType *coordinates, T &lon_deg, T &lat_deg) {
-  // Normalize to unit sphere
-  SType dMag = std::sqrt(coordinates[0] * coordinates[0] +
-                         coordinates[1] * coordinates[1] +
-                         coordinates[2] * coordinates[2]);
-  SType x = coordinates[0] / dMag;
-  SType y = coordinates[1] / dMag;
-  SType z = coordinates[2] / dMag;
-
-  // Handle pole special cases
-  if (fabs(z) < 1.0 - ReferenceTolerance) {
-    // Standard case: use atan2 and asin
-    lon_deg = (atan2(y, x)) * 180.0 / M_PI;
-    lat_deg = (asin(z)) * 180.0 / M_PI;
-
-    // Normalize longitude to [0, 360)
-    if (lon_deg < 0.0) {
-      lon_deg += 360.0;
-    }
-  } else if (z > 0.0) {
-    // North pole
-    lon_deg = 0.0;
-    lat_deg = 90.0;
-  } else {
-    // South pole
-    lon_deg = 0.0;
-    lat_deg = -90.0;
-  }
-
-  return;
-}
 
 //===========================================================================
 // Main ParallelPointCloudReader Class

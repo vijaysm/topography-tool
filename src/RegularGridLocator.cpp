@@ -73,115 +73,6 @@ RegularGridLocator::RegularGridLocator(const std::vector<double> &lats,
 }
 
 //===========================================================================
-// Distance Computation Methods
-//===========================================================================
-
-/**
- * @brief Normalize longitude to [m_lon_min, m_lon_min + 360) range
- *
- * Ensures longitude values are within the valid range for the grid.
- * Handles wraparound for global grids.
- *
- * @param lon Input longitude in degrees
- * @return Normalized longitude in degrees
- */
-double RegularGridLocator::normalize_longitude(double lon) const {
-  // Normalize to [m_lon_min, m_lon_min + 360) range
-  while (lon < m_lon_min)
-    lon += 360.0;
-  while (lon >= m_lon_min + 360.0)
-    lon -= 360.0;
-  return lon;
-}
-
-/**
- * @brief Compute Haversine (great circle) distance in degrees
- *
- * Calculates the great circle distance between two points on a sphere
- * using the Haversine formula. This is the most accurate method for
- * spherical distances.
- *
- * @param lon1 Longitude of first point (degrees)
- * @param lat1 Latitude of first point (degrees)
- * @param lon2 Longitude of second point (degrees)
- * @param lat2 Latitude of second point (degrees)
- * @return Distance in degrees (angular distance)
- */
-double RegularGridLocator::haversine_distance(double lon1, double lat1,
-                                              double lon2, double lat2) const {
-  // Convert to radians
-  double lat1_rad = lat1 * DEG_TO_RAD;
-  double lat2_rad = lat2 * DEG_TO_RAD;
-  double dlon = (lon2 - lon1) * DEG_TO_RAD;
-  double dlat = (lat2 - lat1) * DEG_TO_RAD;
-
-  // Haversine formula: a = sin²(Δφ/2) + cos φ1 ⋅ cos φ2 ⋅ sin²(Δλ/2)
-  double a = std::sin(dlat / 2.0) * std::sin(dlat / 2.0) +
-             std::cos(lat1_rad) * std::cos(lat2_rad) * std::sin(dlon / 2.0) *
-                 std::sin(dlon / 2.0);
-  double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
-
-  // Return distance in degrees (angular distance)
-  return c / DEG_TO_RAD;
-}
-
-/**
- * @brief Compute Euclidean L2 distance in lat/lon space
- *
- * Fast approximation for small distances where the curvature of
- * the Earth can be ignored. Handles longitude wraparound by choosing
- * the shorter path around the sphere.
- *
- * @param lon1 Longitude of first point (degrees)
- * @param lat1 Latitude of first point (degrees)
- * @param lon2 Longitude of second point (degrees)
- * @param lat2 Latitude of second point (degrees)
- * @return Euclidean distance in degrees
- */
-double RegularGridLocator::euclidean_distance(double lon1, double lat1,
-                                              double lon2, double lat2) const {
-  PointType3D p1, p2;
-  RLLtoXYZ_Deg(lon1, lat1, p1);
-  RLLtoXYZ_Deg(lon2, lat2, p2);
-
-  return std::sqrt((p2[0] - p1[0]) * (p2[0] - p1[0]) +
-                   (p2[1] - p1[1]) * (p2[1] - p1[1]) +
-                   (p2[2] - p1[2]) * (p2[2] - p1[2]));
-
-  // double dlon = lon2 - lon1;
-  // double dlat = lat2 - lat1;
-
-  // // Handle longitude wraparound: choose shorter path
-  // if (dlon > 180.0)
-  //     dlon -= 360.0;
-  // if (dlon < -180.0)
-  //     dlon += 360.0;
-
-  // return std::sqrt(dlon * dlon + dlat * dlat);
-}
-
-/**
- * @brief Compute distance between two points based on selected metric
- *
- * Dispatch function that routes to the appropriate distance computation
- * method based on the configured distance metric.
- *
- * @param lon1 Longitude of first point (degrees)
- * @param lat1 Latitude of first point (degrees)
- * @param lon2 Longitude of second point (degrees)
- * @param lat2 Latitude of second point (degrees)
- * @return Distance in degrees
- */
-double RegularGridLocator::compute_distance(double lon1, double lat1,
-                                            double lon2, double lat2) const {
-  if (m_metric == HAVERSINE) {
-    return haversine_distance(lon1, lat1, lon2, lat2);
-  } else {
-    return euclidean_distance(lon1, lat1, lon2, lat2);
-  }
-}
-
-//===========================================================================
 // Utility Methods
 //===========================================================================
 
@@ -343,8 +234,8 @@ size_t RegularGridLocator::radiusSearch(
       // Search all longitudes (wraparound case)
       for (size_t ilon = 0; ilon < m_nlon; ++ilon) {
         CoordinateType grid_lon = m_lons[ilon];
-        CoordinateType dist =
-            compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+        CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon,
+                                               grid_lat, m_metric);
 
         if (dist <= radius) {
           size_t idx = get_linear_index(ilat, ilon);
@@ -360,8 +251,8 @@ size_t RegularGridLocator::radiusSearch(
       // Search limited longitude range
       for (size_t ilon = ilon_min; ilon <= ilon_max; ++ilon) {
         CoordinateType grid_lon = m_lons[ilon];
-        CoordinateType dist =
-            compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+        CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon,
+                                               grid_lat, m_metric);
 
         if (dist <= radius) {
           size_t idx = get_linear_index(ilat, ilon);
@@ -436,8 +327,8 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
       for (size_t ilat = pole_ilat - 1; max_heap.size() < k && ilat < m_nlat;
            --ilat) {
         for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
-          CoordinateType dist = compute_distance(query_lon, query_lat,
-                                                 m_lons[ilon], m_lats[ilat]);
+          CoordinateType dist = compute_distance(
+              query_lon, query_lat, m_lons[ilon], m_lats[ilat], m_metric);
           size_t index = get_linear_index(ilat, ilon);
           max_heap.push({dist * dist, index});
         }
@@ -480,8 +371,8 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
 
           CoordinateType grid_lon = m_lons[ilon];
           CoordinateType grid_lat = m_lats[ilat];
-          CoordinateType dist =
-              compute_distance(query_lon, query_lat, grid_lon, grid_lat);
+          CoordinateType dist = compute_distance(query_lon, query_lat, grid_lon,
+                                                 grid_lat, m_metric);
           CoordinateType dist_sq = dist * dist;
 
           size_t idx = get_linear_index(ilat, ilon);

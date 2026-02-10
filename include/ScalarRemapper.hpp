@@ -78,9 +78,8 @@ public:
     bool is_usgs_format = false; // Use USGS format for point cloud
     bool use_kd_tree = false;    // Use KD-tree (true) or RegularGridLocator
                                  // (false) for USGS format
-    RegularGridLocator::DistanceMetric distance_metric =
-        RegularGridLocator::HAVERSINE; // Distance metric for
-                                       // RegularGridLocator
+    DistanceMetric distance_metric = HAVERSINE; // Distance metric for
+                                                // RegularGridLocator
     // const ParallelPointCloudReader::PointCloudMeshView*
     // target_point_cloud_view = nullptr;
     bool reuse_source_mesh = false; // Reuse source mesh as target so that

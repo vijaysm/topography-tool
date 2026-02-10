@@ -238,7 +238,7 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
   std::vector<moab::ErrorCode> element_errors(point_data.size(), MB_SUCCESS);
   std::cout.precision(10);
 
-  // Compute search radius from constant area: A = 4πr² → r = sqrt(A/(4π))
+  // Compute search radius from constant area: A = πr² → r = sqrt(A/(π))
   const double search_radius = std::sqrt(constant_area / M_PI);
 
   // Main parallel loop over all points
@@ -919,6 +919,12 @@ ScalarRemapper::find_nearest_point(
 
   std::vector<nanoflann::ResultItem<size_t, CoordinateType>> ret_matches;
 
+  // Fallback to KD-tree or linear search
+  if (!m_kdtree_built || !m_kdtree) {
+    // Linear search fallback when KD-tree is unavailable
+    return linear_search_fallback(target_point, point_data, search_radius);
+  }
+
   // Use RegularGridLocator for USGS format if enabled
   if (m_config.is_usgs_format && !m_config.use_kd_tree &&
       m_grid_locator_built && m_grid_locator) {
@@ -949,12 +955,6 @@ ScalarRemapper::find_nearest_point(
       }
     }
     return ret_matches;
-  }
-
-  // Fallback to KD-tree or linear search
-  if (!m_kdtree_built || !m_kdtree) {
-    // Linear search fallback when KD-tree is unavailable
-    return linear_search_fallback(target_point, point_data, search_radius);
   }
 
   // Use KD-tree for fast spatial queries

@@ -11,12 +11,6 @@
 
 namespace moab {
 
-// Constants
-static constexpr double EARTH_RADIUS_KM = 6371.0;
-static constexpr double DEG_TO_RAD = M_PI / 180.0;
-static constexpr double RAD_TO_DEG = 180.0 / M_PI;
-static constexpr double POLE_TOLERANCE = 1e-6; // Degrees from pole
-
 /**
  * @brief Fast spatial query for regular lat/lon grids
  *
@@ -26,12 +20,6 @@ static constexpr double POLE_TOLERANCE = 1e-6; // Degrees from pole
  */
 class RegularGridLocator {
 public:
-  enum DistanceMetric {
-    HAVERSINE,   // Great circle distance on sphere (accurate)
-    EUCLIDEAN_L2 // Euclidean distance based on lat/lon space (fast
-                 // approximation)
-  };
-
   /**
    * @brief Construct locator from explicit lat/lon coordinate vectors
    *
@@ -97,24 +85,6 @@ private:
   DistanceMetric m_metric;
 
   /**
-   * @brief Compute distance between two points based on selected metric
-   */
-  double compute_distance(double lon1, double lat1, double lon2,
-                          double lat2) const;
-
-  /**
-   * @brief Compute Haversine (great circle) distance in degrees
-   */
-  double haversine_distance(double lon1, double lat1, double lon2,
-                            double lat2) const;
-
-  /**
-   * @brief Compute Euclidean L2 distance in lat/lon space
-   */
-  double euclidean_distance(double lon1, double lat1, double lon2,
-                            double lat2) const;
-
-  /**
    * @brief Convert 2D grid indices to linear index
    */
   inline size_t get_linear_index(size_t ilat, size_t ilon) const {
@@ -129,11 +99,6 @@ private:
     ilat = linear_idx / m_nlon;
     ilon = linear_idx % m_nlon;
   }
-
-  /**
-   * @brief Normalize longitude to [m_lon_min, m_lon_min + 360) range
-   */
-  double normalize_longitude(double lon) const;
 
   /**
    * @brief Check if latitude is at or very close to a pole

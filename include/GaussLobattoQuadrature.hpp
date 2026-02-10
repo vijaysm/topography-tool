@@ -20,7 +20,8 @@ struct GaussLobattoQuadrature {
 public:
   ///	<summary>
   ///		Return the Gauss-Lobatto quadrature points and their
-  ///corresponding 		weights for the given number of points and reference element.
+  /// corresponding 		weights for the given number of points and
+  /// reference element.
   ///	</summary>
   inline static moab::ErrorCode GetPoints(int nCount, std::vector<double> &dG,
                                           std::vector<double> &dW,
