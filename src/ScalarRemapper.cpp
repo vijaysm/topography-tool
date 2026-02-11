@@ -205,8 +205,13 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
   std::vector<moab::ErrorCode> element_errors(point_data.size(), MB_SUCCESS);
   std::cout.precision(10);
 
-  // Compute search radius from constant area: A = πr² → r = sqrt(A/(π))
-  const double search_radius = std::sqrt(constant_area / M_PI);
+  // Compute search radius from constant area:
+  // A = (1.0/α²) × πr² → r = α × √(A/π)
+  const double search_radius =
+      m_config.user_alpha * std::sqrt(constant_area / M_PI);
+
+  VLOG(2) << "Self smoothing area = " << constant_area
+          << ", Search radius = " << search_radius;
 
   // Main parallel loop over all points
 #pragma omp parallel for schedule(dynamic, 1)                                  \
@@ -1710,11 +1715,15 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
     // EntityHandle vertex = elements[elem_idx];
     PointType3D gll_point;
     std::copy_n(vertex_coords.data() + elem_idx * 3, 3, gll_point.begin());
-    const double search_radius = std::sqrt(vertex_areas[elem_idx] / M_PI);
 
-    if (elem_idx < 10) {
-      std::cout << "Area = " << vertex_areas[elem_idx]
-                << ", Search radius = " << search_radius << std::endl;
+    // Compute search radius from constant area:
+    // A = (1.0/α²) × πr² → r = α × √(A/π)
+    const double search_radius =
+        m_config.user_alpha * std::sqrt(vertex_areas[elem_idx] / M_PI);
+
+    if (elem_idx == 0) {
+      VLOG(2) << "First element: Area = " << vertex_areas[elem_idx]
+              << ", Search radius = " << search_radius;
     }
 
     // Initialize element-averaged values (thread-local)
@@ -1864,6 +1873,5 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
 
 } // namespace moab

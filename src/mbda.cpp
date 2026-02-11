@@ -184,6 +184,7 @@ int main(int argc, char *argv[]) {
     std::string square_fields_string_list = "";
     bool reuse_source_mesh = false;
     double user_smoothing_area = 0.0;
+    double user_alpha = 1.0;
 
     // Remapping options
     std::string remap_method = "ALG_DISKAVERAGE";
@@ -240,6 +241,10 @@ int main(int argc, char *argv[]) {
     opts.addOpt<double>("smoothing-area",
                         "Smoothing area for the target mesh. Default: 0.0",
                         &user_smoothing_area);
+    opts.addOpt<double>("alpha",
+                        "Constant multiplication factor for area on the target "
+                        "mesh. Default: 1.0",
+                        &user_alpha);
 
     // Parse command-line arguments
     opts.parseCommandLine(argc, argv);
@@ -461,6 +466,7 @@ int main(int argc, char *argv[]) {
         remap_config.scalar_var_names = reader.get_config().scalar_var_names;
         remap_config.reuse_source_mesh = build_target_from_source;
         remap_config.user_search_area = user_smoothing_area;
+        remap_config.user_alpha = user_alpha;
 
         // Add squared field names to the remapping list
         // These are automatically computed from base fields

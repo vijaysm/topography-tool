@@ -85,6 +85,7 @@ public:
     bool reuse_source_mesh = false; // Reuse source mesh as target so that
                                     // we can smoothen the data
     double user_search_area = 0.0;  // User-specified search area for smoothing
+    double user_alpha = 1.0;        // User-specified alpha for smoothing
   };
 
   struct MeshData {
