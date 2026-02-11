@@ -138,6 +138,8 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat,
   // Normalize query longitude to grid range
   query_lon = normalize_longitude(query_lon);
 
+  double factor = 1.1; // 10% conservative to get overlap
+  radius *= factor;
   // Latitude bounds (simple clipping, no wraparound)
   double lat_search_min = std::max(m_lat_min, query_lat - radius);
   double lat_search_max = std::min(m_lat_max, query_lat + radius);
@@ -146,9 +148,10 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat,
   ilat_max = find_nearest_index(m_lats, lat_search_max);
 
   // Longitude bounds with wraparound handling
-  // At high latitudes, longitude spacing becomes compressed due to
-  // convergence Use a conservative estimate: radius / cos(lat) to account for
-  // this
+  // At high latitudes, longitude spacing becomes
+  // compressed due to convergence at poles
+  // Let us use a conservative estimate to account for this:
+  //    radius / cos(lat)
   double lat_rad = std::abs(query_lat) * DEG_TO_RAD;
   double lon_radius = (std::abs(query_lat) < 90.0)
                           ? radius / std::max(0.01, std::cos(lat_rad))

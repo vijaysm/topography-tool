@@ -31,8 +31,7 @@ public:
    * fastest: Index(ilat, ilon) = ilat * nlon + ilon
    */
   RegularGridLocator(const std::vector<double> &lats,
-                     const std::vector<double> &lons,
-                     DistanceMetric metric = EUCLIDEAN_L2);
+                     const std::vector<double> &lons, DistanceMetric metric);
 
   /**
    * @brief Radius search - find all points within given radius

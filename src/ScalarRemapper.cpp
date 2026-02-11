@@ -43,39 +43,6 @@
 namespace moab {
 
 //===========================================================================
-// Utility Functions
-//===========================================================================
-
-/**
- * @brief Compute Euclidean distance between two points
- * @tparam T Point type (array-like with size() method)
- * @param p1 First point
- * @param p2 Second point
- * @return Euclidean distance
- */
-template <typename T>
-static typename T::value_type compute_distance(const T &p1, const T &p2) {
-  typename T::value_type dMag = 0.0;
-  for (size_t i = 0; i < p1.size(); ++i) {
-    dMag += (p1[i] - p2[i]) * (p1[i] - p2[i]);
-  }
-  return std::sqrt(dMag);
-}
-
-/**
- * @brief Compute distance between 3D Cartesian point and 2D lon/lat point
- * @param p1 3D Cartesian point
- * @param p2 2D lon/lat point
- * @return Distance on unit sphere
- */
-static CoordinateType compute_distance(const PointType3D &p1,
-                                       const PointType &p2) {
-  PointType3D p2_3d;
-  RLLtoXYZ_Deg(p2[0], p2[1], p2_3d);
-  return compute_distance(p1, p2_3d);
-}
-
-//===========================================================================
 // ScalarRemapper Base Class Implementation
 //===========================================================================
 
@@ -919,12 +886,6 @@ ScalarRemapper::find_nearest_point(
 
   std::vector<nanoflann::ResultItem<size_t, CoordinateType>> ret_matches;
 
-  // Fallback to KD-tree or linear search
-  if (!m_kdtree_built || !m_kdtree) {
-    // Linear search fallback when KD-tree is unavailable
-    return linear_search_fallback(target_point, point_data, search_radius);
-  }
-
   // Use RegularGridLocator for USGS format if enabled
   if (m_config.is_usgs_format && !m_config.use_kd_tree &&
       m_grid_locator_built && m_grid_locator) {
@@ -939,6 +900,9 @@ ScalarRemapper::find_nearest_point(
       // Radius search within specified distance
       size_t num_matches = m_grid_locator->radiusSearch(query_pt, search_radius,
                                                         ret_matches, false);
+      //   std::cout << "Search radius = " << search_radius
+      //             << " radians, Number of matches: " << num_matches <<
+      //             std::endl;
       if (num_matches == 0) {
         ret_matches.push_back(nanoflann::ResultItem<size_t, CoordinateType>(
             static_cast<size_t>(-1), 0.0));
@@ -958,7 +922,13 @@ ScalarRemapper::find_nearest_point(
   }
 
   // Use KD-tree for fast spatial queries
-  return kdtree_search(target_point, search_radius, max_neighbors);
+  if (m_kdtree_built && m_kdtree) {
+    return kdtree_search(target_point, angular_to_cartesian(search_radius / 12),
+                         max_neighbors);
+  } else {
+    // Fallback to linear search when KD-tree is unavailable
+    return linear_search_fallback(target_point, point_data, search_radius);
+  }
 }
 
 //===========================================================================
@@ -989,7 +959,7 @@ ScalarRemapper::linear_search_fallback(
   // Linear search through all points
   for (size_t i = 0; i < point_data.size(); ++i) {
     auto coord = point_data.get_lonlat(i);
-    CoordinateType distance = compute_distance(target_point, coord);
+    CoordinateType distance = private_compute_distance(target_point, coord);
 
     // Check search radius constraint
     if (search_radius > 0.0 && distance > search_radius) {
@@ -1895,194 +1865,5 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// NOTE: This function is from TempestRemap and needs significant adaptation
-// The functionality is now implemented in PCDiskAveragedProjectionRemapper
-// class
-/*
-moab::ErrorCode LinearRemapFVtoGLL_Averaged( const std::vector< double >&
-dataGLLNodalArea )
-{
-    // Order of the finite element method
-    constexpr int nP = 4;
-
-    // GLL quadrature nodes
-    std::vector< double > dG;
-    std::vector< double > dW;
-
-    GaussLobattoQuadrature::GetPoints( nP, 0.0, 1.0, dG, dW );
-
-        // Number of Faces
-    std::vector<EntityHandle> faces;
-    m_interface->get_entities_by_dimension(m_mesh_set, 2, faces);
-
-
-    // Initialize coordinates for map
-    // mapRemap.InitializeTargetCoordinatesFromMeshFE(
-    //     meshTarget, optsAlg.nPout, dataGLLNodes);
-
-    // Generate the continuous Jacobian
-    constexpr bool fContinuous = true;
-
-    if (fContinuous) {
-        GenerateUniqueJacobian(
-            dataGLLNodes,
-            dataGLLJacobian,
-            mapRemap.GetTargetAreas());
-
-    } else {
-        GenerateDiscontinuousJacobian(
-            dataGLLJacobian,
-            mapRemap.GetTargetAreas());
-    }
-
-    // Announcements
-    moab::DebugOutput dbgprint( std::cout, this->rank, 0 );
-    dbgprint.set_prefix( "[LinearRemapFVtoSE_Averaged]: " );
-    if( is_root )
-    {
-        dbgprint.printf( 0, "Finite Volume to Spectral Element Projection\n" );
-    }
-
-    DataArray3D<int> dataGLLNodes;
-    DataArray3D<double> dataGLLJacobian;
-    {
-        AnnounceStartBlock("Generating output mesh meta data");
-        double dNumericalArea =
-            Remapper_GenerateFEMetaData(
-                mb,
-                face,
-                dG, dW,
-                dataGLLJacobian);
-
-        Announce("Output Mesh Numerical Area: %1.15e", dNumericalArea);
-        AnnounceEndBlock(NULL);
-    }
-
-
-    // Loop through all faces on meshInput
-    const unsigned outputFrequency = ( m_meshOutput->faces.size() / 10 ) + 1;
-
-    MOABCentroidCloud cloud;
-    {
-        // Initialize the kd-tree
-        cloud.init( source_vertices.size() );
-
-        std::vector<double> srccoords(source_vertices.size() * 3);
-        MB_CHK_ERR( m_interface->get_coords( source_vertices, srccoords.data() )
-);
-
-        // Loop through all elements and add to the tree
-        for( size_t ielem = 0; ielem < source_vertices.size(); ielem++ )
-        {
-            const size_t offset = ielem * 3;
-            const double query_pt_sq =
-                std::sqrt( srccoords[offset] * srccoords[offset] +
-srccoords[offset+1] * srccoords[offset+1] + srccoords[offset+2] *
-srccoords[offset+2] );
-
-            // Rescale the coordinates to the unit sphere and add to the point
-cloud cloud.points.emplace_back( std::array< double, 3 >( {
-srccoords[offset]/query_pt_sq, srccoords[offset+1]/query_pt_sq,
-srccoords[offset+2]/query_pt_sq } ) );
-
-            // Get the vertex index
-            cloud.elements.emplace_back( ielem );
-        }
-    }
-
-    // if( is_root ) dbgprint.printf( 0, "Building Kd-tree now..." );
-    KDTree tree( 3, cloud, nanoflann::KDTreeSingleIndexAdaptorParams( 10 ) );
-    tree.buildIndex();
-    // if( is_root ) dbgprint.printf( 0, "Finished building Kd-tree index..." );
-    for( size_t ixOutput = 0; ixOutput < m_meshOutput->faces.size(); ixOutput++
-)
-    {
-        // Output every 1000 elements
-// #ifdef VERBOSE
-        if( ixOutput % outputFrequency == 0 && is_root )
-        {
-            dbgprint.printf( 0, "Element %zu/%lu\n", ixOutput,
-m_meshOutput->faces.size() );
-        }
-// #endif
-        // This Face
-        const Face& faceSecond = m_meshOutput->faces[ixOutput];
-
-        // Area of the First Face
-        // double dSecondArea = m_meshOutput->vecFaceArea[ixOutput];
-        // Node nodecenter = GetFaceCentroid( faceSecond, m_meshOutput->nodes );
-
-        for( int p = 0; p < nP; p++ )
-        {
-            for( int q = 0; q < nP; q++ )
-            {
-                int ixOutputGlobal;
-                if( fContinuous )
-                    ixOutputGlobal = dataGLLNodes[p][q][ixOutput] - 1;
-                else
-                    ixOutputGlobal = ixOutput * nP * nP + p * nP + q;
-
-                // Coordinate of the GLL point
-                // Node nodeRef = m_meshOutput->nodes[ixOutputGlobal];
-
-                Node nodeRef;
-                ApplyLocalMap( faceSecond, m_meshOutput->nodes, dG[p], dG[q],
-nodeRef );
-
-                const std::array< double, 3 > query = { nodeRef.x, nodeRef.y,
-nodeRef.z };
-
-                // The radius for the search is the sqrt of the Jacobian
-                const double radius = std::sqrt( dataGLLJacobian[p][q][ixOutput]
-);
-
-                LOG(INFO) << "Searching elements within radius " << radius
-                          << " for query point: " << query[0] << ", " <<
-query[1] << ", " << query[2] << "\n";
-                // Now let us search for the nearest elements within search
-radius auto results = radius_search_kdtree( tree, cloud, query, radius );
-
-                // Find how many elements were found
-                size_t nResults = results.size();
-
-                // Newton-Cotes equal-weight method
-                // const double dWeight  = dataGLLNodalArea[ixOutput] /
-nResults; const double dWeight = 1.0 / nResults;
-
-                if (nResults == 0)
-                {
-                    printf( "No elements found within radius %f for query point:
-%f, %f, %f", radius, query[0], query[1], query[2] ); MB_CHK_SET_ERR(
-moab::MB_FAILURE, "No elements found within radius" );
-                }
-
-                for( auto ixFirstElement : results )
-                {
-                    LOG(INFO) << ixFirstElement << "\tFound " << nResults << "
-elements within radius " << radius
-                                << " for query point: " << query[0] << ", " <<
-query[1] << ", " << query[2] << "\n";
-                    // LOG(INFO) << "\t[ " << ixOutputGlobal << "] Found
-association of point " << query[0] << ", "
-                    //           << query[1] << ", " << query[2] << " to " <<
-ixFirstElement << "\n"; if ( ixFirstElement < 0 || ixFirstElement >=
-source_vertices.size() )
-                    {
-                        printf( "Logic error: source element has to be between 0
-and %d, but received %d for row %d\n", source_vertices.size(), ixFirstElement,
-ixOutputGlobal ); MB_CHK_SET_ERR( moab::MB_FAILURE, "Logic error: source element
-has to be between 0 and %d, but received %d for row %d\n",
-                                     source_vertices.size(), ixFirstElement,
-ixOutputGlobal );
-                    }
-                    smatMap( ixOutputGlobal, ixFirstElement ) += dWeight;
-                }
-            }
-        }
-    }
-
-    return moab::MB_SUCCESS;
-}
-*/
 
 } // namespace moab

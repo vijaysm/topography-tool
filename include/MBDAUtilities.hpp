@@ -21,9 +21,8 @@ static constexpr double POLE_TOLERANCE = 1e-6; // Degrees from pole
 static constexpr CoordinateType ReferenceTolerance = 1e-12;
 
 enum DistanceMetric {
-  HAVERSINE,   // Great circle distance on sphere (accurate)
-  EUCLIDEAN_L2 // Euclidean distance based on lat/lon space (fast
-               // approximation)
+  HAVERSINE, // Great circle distance on sphere (accurate)
+  CARTESIAN  // Euclidean distance in 3D Cartesian space (fast approximation)
 };
 
 /**
@@ -65,6 +64,16 @@ inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, T *coordinates) {
 template <typename T>
 inline void RLLtoXYZ_Deg(T lon_deg, T lat_deg, std::array<T, 3> &coordinates) {
   RLLtoXYZ_Deg(lon_deg, lat_deg, coordinates.data());
+}
+
+// Convert angular distance (radians) to Cartesian distance on unit sphere
+inline double angular_to_cartesian(double angular_distance_radians) {
+  return 2.0 * std::sin(angular_distance_radians / 2.0);
+}
+
+// Convert Cartesian distance to angular distance (radians) on unit sphere
+inline double cartesian_to_angular(double cartesian_distance) {
+  return 2.0 * std::asin(cartesian_distance / 2.0);
 }
 
 /**
@@ -134,6 +143,36 @@ inline double normalize_longitude(double lon) {
 }
 
 /**
+ * @brief Compute Euclidean distance between two points
+ * @tparam T Point type (array-like with size() method)
+ * @param p1 First point
+ * @param p2 Second point
+ * @return Euclidean distance
+ */
+template <typename T>
+inline typename T::value_type private_compute_distance(const T &p1,
+                                                       const T &p2) {
+  typename T::value_type dMag = 0.0;
+  for (size_t i = 0; i < p1.size(); ++i) {
+    dMag += (p1[i] - p2[i]) * (p1[i] - p2[i]);
+  }
+  return std::sqrt(dMag);
+}
+
+/**
+ * @brief Compute distance between 3D Cartesian point and 2D lon/lat point
+ * @param p1 3D Cartesian point
+ * @param p2 2D lon/lat point
+ * @return Distance on unit sphere
+ */
+inline CoordinateType private_compute_distance(const PointType3D &p1,
+                                               const PointType &p2) {
+  PointType3D p2_3d;
+  RLLtoXYZ_Deg(p2[0], p2[1], p2_3d);
+  return private_compute_distance(p1, p2_3d);
+}
+
+/**
  * @brief Compute Haversine (great circle) distance in degrees
  *
  * Calculates the great circle distance between two points on a sphere
@@ -183,9 +222,7 @@ inline double euclidean_distance(double lon1, double lat1, double lon2,
   RLLtoXYZ_Deg(lon1, lat1, p1);
   RLLtoXYZ_Deg(lon2, lat2, p2);
 
-  return std::sqrt((p2[0] - p1[0]) * (p2[0] - p1[0]) +
-                   (p2[1] - p1[1]) * (p2[1] - p1[1]) +
-                   (p2[2] - p1[2]) * (p2[2] - p1[2]));
+  return private_compute_distance(p1, p2);
 }
 
 /**
