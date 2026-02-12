@@ -59,7 +59,7 @@ struct Distance_Metric_Adaptor {
 
   const DataSource &data_source;
 
-  static constexpr bool use_haversine = true;
+  static constexpr bool use_haversine = false;
 
   Distance_Metric_Adaptor(const DataSource &_data_source)
       : data_source(_data_source) {}
