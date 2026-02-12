@@ -746,7 +746,8 @@ ErrorCode ScalarRemapper::build_kdtree(
     m_kdtree = std::unique_ptr<KDTree>(new KDTree(
         3, *m_adapter,
         nanoflann::KDTreeSingleIndexAdaptorParams(
-            16, nanoflann::KDTreeSingleIndexAdaptorFlags::SkipInitialBuildIndex,
+            256,
+            nanoflann::KDTreeSingleIndexAdaptorFlags::SkipInitialBuildIndex,
             num_threads /* number of threads */)));
 
     // Build the index
@@ -928,7 +929,7 @@ ScalarRemapper::find_nearest_point(
 
   // Use KD-tree for fast spatial queries
   if (m_kdtree_built && m_kdtree) {
-    return kdtree_search(target_point, angular_to_cartesian(search_radius / 12),
+    return kdtree_search(target_point, angular_to_cartesian(search_radius),
                          max_neighbors);
   } else {
     // Fallback to linear search when KD-tree is unavailable
@@ -1001,7 +1002,7 @@ ScalarRemapper::kdtree_search(const PointType3D &target_point,
 
   try {
     nanoflann::SearchParameters params;
-    params.sorted = true;
+    params.sorted = false;
     params.eps = std::numeric_limits<CoordinateType>::epsilon() *
                  10; // 10x machine epsilon
 
@@ -1290,19 +1291,11 @@ struct MOABCentroidCloud {
   template <class BBOX> bool kdtree_get_bbox(BBOX &) const { return false; }
 };
 
-using MOABKDTree = nanoflann::KDTreeSingleIndexAdaptor<
-    nanoflann::L2_Simple_Adaptor<CoordinateType, MOABCentroidCloud,
-                                 CoordinateType>,
-    MOABCentroidCloud, // DatasetAdaptor
-    3,                 // 3D
-    size_t             // IndexType
-    >;
-
 // ----------------------
 // Radius search wrapper
 // ----------------------
 std::vector<size_t>
-radius_search_kdtree(const MOABKDTree &tree, const MOABCentroidCloud &cloud,
+radius_search_kdtree(const KDTree &tree, const MOABCentroidCloud &cloud,
                      const std::array<CoordinateType, 3> &query_pt,
                      CoordinateType radius) {
   CoordinateType radius_sq = radius * radius;
@@ -1723,7 +1716,8 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
 
     if (elem_idx == 0) {
       VLOG(2) << "First element: Area = " << vertex_areas[elem_idx]
-              << ", Search radius = " << search_radius;
+              << ", Search radius = " << search_radius << " radians, "
+              << angular_to_cartesian(search_radius) << " cartesian";
     }
 
     // Initialize element-averaged values (thread-local)

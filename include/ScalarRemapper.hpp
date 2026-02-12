@@ -51,10 +51,53 @@ struct PointCloudAdapter {
   }
 };
 
+template <class T, class DataSource, typename _DistanceType = T,
+          typename IndexType = uint32_t>
+struct Distance_Metric_Adaptor {
+  using ElementType = T;
+  using DistanceType = _DistanceType;
+
+  const DataSource &data_source;
+
+  static constexpr bool use_haversine = true;
+
+  Distance_Metric_Adaptor(const DataSource &_data_source)
+      : data_source(_data_source) {}
+
+  inline DistanceType evalMetric(const T *a, const IndexType b_idx,
+                                 size_t size) const {
+    DistanceType result = DistanceType();
+    const T *b = data_source.points.data() + b_idx * 3;
+
+    // Use Haversine distance for geographic coordinates
+    if (use_haversine) {
+      assert(size == 3);
+      double lon1, lat1, lon2, lat2;
+      XYZtoRLL_Deg(a, lon1, lat1);
+      XYZtoRLL_Deg(b, lon2, lat2);
+      result = haversine_distance(lon1, lat1, lon2, lat2);
+    } else {
+      // By default, compute the Euclidean distance
+      for (size_t i = 0; i < size; ++i) {
+        const DistanceType diff = a[i] - b[i];
+        result += diff * diff;
+      }
+      result = sqrt(result);
+    }
+    return result;
+  }
+
+  template <typename U, typename V>
+  inline DistanceType accum_dist(const U a, const V b, const size_t) const {
+    return (a - b) * (a - b);
+  }
+};
+
 // Define the KD-tree type with explicit template parameters
 typedef nanoflann::KDTreeSingleIndexAdaptor<
-    nanoflann::L2_Simple_Adaptor<CoordinateType, PointCloudAdapter,
-                                 CoordinateType, size_t>,
+    // nanoflann::L2_Simple_Adaptor<CoordinateType, PointCloudAdapter,
+    //                              CoordinateType, size_t>,
+    Distance_Metric_Adaptor<CoordinateType, PointCloudAdapter>,
     // nanoflann::SO2_Adaptor<CoordinateType, PointCloudAdapter, CoordinateType,
     // size_t>,
     PointCloudAdapter, 3, /* dim */
