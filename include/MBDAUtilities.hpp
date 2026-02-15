@@ -204,6 +204,25 @@ inline double haversine_distance(double lon1, double lat1, double lon2,
 }
 
 /**
+ * @brief Compute Haversine (great circle) distance in radians
+ *
+ * Calculates the great circle distance between two points on a sphere
+ * using the Haversine formula. This is the most accurate method for
+ * spherical distances.
+ *
+ * @param a First point in 3D space (x, y, z)
+ * @param b Second point in 3D space (x, y, z)
+ * @param radius Radius of the sphere (default: 1.0 for unit sphere)
+ * @return Distance in radians (angular distance)
+ */
+inline double haversine_distance(const double *a, const double *b,
+                                 double radius = 1.0) {
+  double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  dot = std::max(-1.0, std::min(1.0, dot));
+  return radius * std::acos(dot);
+}
+
+/**
  * @brief Compute Euclidean L2 distance in lat/lon space
  *
  * Fast approximation for small distances where the curvature of

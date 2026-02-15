@@ -72,10 +72,11 @@ struct Distance_Metric_Adaptor {
     // Use Haversine distance for geographic coordinates
     if (use_haversine) {
       assert(size == 3);
-      double lon1, lat1, lon2, lat2;
-      XYZtoRLL_Deg(a, lon1, lat1);
-      XYZtoRLL_Deg(b, lon2, lat2);
-      result = haversine_distance(lon1, lat1, lon2, lat2) * DEG_TO_RAD;
+      // double lon1, lat1, lon2, lat2;
+      // XYZtoRLL_Deg(a, lon1, lat1);
+      // XYZtoRLL_Deg(b, lon2, lat2);
+      // result = haversine_distance(lon1, lat1, lon2, lat2) * DEG_TO_RAD;
+      result = haversine_distance(a, b);
     } else {
       // By default, compute the Euclidean distance
       for (size_t i = 0; i < size; ++i) {
