@@ -876,27 +876,17 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
 
     // Strict read validation for requested fields and dimensions.
     for (const auto &var_name : m_config.scalar_var_names) {
-      auto d_it = chunk_data.d_scalar_variables.find(var_name);
-      auto i_it = chunk_data.i_scalar_variables.find(var_name);
+      auto d_it = chunk_data.scalar_variables.find(var_name);
 
-      if (d_it == chunk_data.d_scalar_variables.end() &&
-          i_it == chunk_data.i_scalar_variables.end()) {
+      if (d_it == chunk_data.scalar_variables.end()) {
         LOG(ERROR) << "Requested scalar field '" << var_name
                    << "' was not read from source data";
         return MB_FAILURE;
       }
 
-      if (d_it != chunk_data.d_scalar_variables.end() &&
-          d_it->second.size() != chunk_data.size()) {
+      if (d_it->second.size() != chunk_data.size()) {
         LOG(ERROR) << "Requested scalar field '" << var_name
                    << "' has size mismatch: " << d_it->second.size()
-                   << " vs expected " << chunk_data.size();
-        return MB_FAILURE;
-      }
-      if (i_it != chunk_data.i_scalar_variables.end() &&
-          i_it->second.size() != chunk_data.size()) {
-        LOG(ERROR) << "Requested scalar field '" << var_name
-                   << "' has size mismatch: " << i_it->second.size()
                    << " vs expected " << chunk_data.size();
         return MB_FAILURE;
       }
