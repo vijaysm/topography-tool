@@ -1368,7 +1368,9 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
                m_interface)
   for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size();
        ++elem_idx) {
-    if ((elem_idx % (m_mesh_data.elements.size() / 10)) == 0) {
+    const size_t output_frequency =
+        std::max<size_t>(1, m_mesh_data.elements.size() / 10);
+    if ((elem_idx % output_frequency) == 0) {
 #pragma omp critical
       LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " +
                        std::to_string(m_mesh_data.elements.size());
@@ -1631,7 +1633,7 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
   MB_CHK_ERR(m_interface->tag_get_data(areaTag, elements.data(),
                                        elements.size(), vertex_areas.data()));
 
-  const size_t output_frequency = elements.size() / 10;
+  const size_t output_frequency = std::max<size_t>(1, elements.size() / 10);
 #pragma omp parallel for schedule(dynamic, 1)                                  \
     shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config,        \
                m_interface, vertex_coords, vertex_areas)

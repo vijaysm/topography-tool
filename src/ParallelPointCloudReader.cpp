@@ -345,11 +345,21 @@ ErrorCode ParallelPointCloudReader::detect_netcdf_format() {
 
         PnetCDF::NcmpiVar coord_var = m_vars.at(lon_var_name);
         m_total_points = 1;
-        for (const auto &dim : coord_var.getDims()) {
+        const auto coord_dims = coord_var.getDims();
+        for (const auto &dim : coord_dims) {
           m_total_points *= dim.getSize();
         }
-        nlats = coord_var.getDims()[0].getSize();
-        nlons = coord_var.getDims()[1].getSize();
+        if (coord_dims.size() >= 2) {
+          nlats = coord_dims[0].getSize();
+          nlons = coord_dims[1].getSize();
+        } else if (coord_dims.size() == 1) {
+          nlats = 1;
+          nlons = coord_dims[0].getSize();
+        } else {
+          LOG(ERROR) << "Coordinate variable '" << lon_var_name
+                     << "' has zero dimensions";
+          return MB_FAILURE;
+        }
 
         // Automatically detect scalar variables (only if not already
         // specified by user)
@@ -706,9 +716,9 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(
     } else if (ndims == 3) {
       // 3D variable - skip for now (likely vertex coordinates or
       // time-dependent data)
-      LOG(INFO) << "WARNING:Skipping 3D variable '" << var_name
-                << "' (not supported for scalar data)";
-      return MB_SUCCESS;
+      LOG(ERROR) << "Variable '" << var_name
+                 << "' has unsupported 3D layout for scalar remapping";
+      return MB_FAILURE;
     } else {
       LOG(ERROR) << "Unsupported variable dimensions: " << ndims
                  << " for variable " << var_name;
@@ -728,17 +738,36 @@ moab::ParallelPointCloudReader::read_all_data(PointData &local_points) {
   LOG(INFO) << "";
   LOG(INFO) << "=== Starting data reading ===";
 
-  nlats_start = 0;
-  nlats_count = nlats;
-  nlons_start = 0;
-  nlons_count = nlons;
+  int rank = 0;
+  int comm_size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
 
-  // now let us scale by number of latitudes
-  const size_t points_per_rank = nlons * nlats;
-  const size_t my_count = nlons_count * nlats_count;
-  const size_t my_start_idx = 0;
+  if (m_is_usgs_format) {
+    nlats_start = (static_cast<size_t>(rank) * nlats) / comm_size;
+    const size_t lat_end =
+        (static_cast<size_t>(rank + 1) * nlats) / comm_size;
+    nlats_count = lat_end - nlats_start;
+    nlons_start = 0;
+    nlons_count = nlons;
+  } else {
+    const size_t global_start =
+        (static_cast<size_t>(rank) * m_total_points) / comm_size;
+    const size_t global_end =
+        (static_cast<size_t>(rank + 1) * m_total_points) / comm_size;
+    nlats_start = 0;
+    nlats_count = 1;
+    nlons_start = global_start;
+    nlons_count = global_end - global_start;
+  }
 
-  LOG(INFO) << "Reading ~" << points_per_rank << " points";
+  const size_t points_per_rank = nlons_count * nlats_count;
+  const size_t my_count = points_per_rank;
+  const size_t my_start_idx =
+      m_is_usgs_format ? nlats_start * nlons : nlons_start;
+
+  LOG(INFO) << "Rank " << rank << "/" << comm_size << " reading "
+            << points_per_rank << " points";
   LOG(INFO) << "Total points: " << m_total_points;
 
   // Read my chunk of data
@@ -758,6 +787,11 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
   try {
     chunk_data.clear();
     chunk_data.reserve(count);
+
+    if (count == 0) {
+      LOG(ERROR) << "Rank has zero points to read from source dataset";
+      return MB_FAILURE;
+    }
 
     // For USGS format, read and store 1D lat/lon arrays efficiently
     if (m_is_usgs_format) {
@@ -869,9 +903,38 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
           chunk_data.i_scalar_variables[squared_name] = std::move(squared_data);
           LOG(INFO) << "Computed squared field: " << squared_name;
         } else {
-          LOG(ERROR) << "Warning: Field '" << field_name
+          LOG(ERROR) << "Field '" << field_name
                      << "' not found for squaring";
+          return MB_FAILURE;
         }
+      }
+    }
+
+    // Strict read validation for requested fields and dimensions.
+    for (const auto &var_name : m_config.scalar_var_names) {
+      auto d_it = chunk_data.d_scalar_variables.find(var_name);
+      auto i_it = chunk_data.i_scalar_variables.find(var_name);
+
+      if (d_it == chunk_data.d_scalar_variables.end() &&
+          i_it == chunk_data.i_scalar_variables.end()) {
+        LOG(ERROR) << "Requested scalar field '" << var_name
+                   << "' was not read from source data";
+        return MB_FAILURE;
+      }
+
+      if (d_it != chunk_data.d_scalar_variables.end() &&
+          d_it->second.size() != chunk_data.size()) {
+        LOG(ERROR) << "Requested scalar field '" << var_name
+                   << "' has size mismatch: " << d_it->second.size()
+                   << " vs expected " << chunk_data.size();
+        return MB_FAILURE;
+      }
+      if (i_it != chunk_data.i_scalar_variables.end() &&
+          i_it->second.size() != chunk_data.size()) {
+        LOG(ERROR) << "Requested scalar field '" << var_name
+                   << "' has size mismatch: " << i_it->second.size()
+                   << " vs expected " << chunk_data.size();
+        return MB_FAILURE;
       }
     }
 

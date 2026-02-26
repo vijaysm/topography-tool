@@ -39,6 +39,7 @@ INITIALIZE_EASYLOGGINGPP
 
 // Standard includes
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
@@ -101,6 +102,12 @@ int get_num_threads(void) {
   return num_threads;
 }
 
+std::string uppercase_string(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return std::toupper(c); });
+  return value;
+}
+
 //===========================================================================
 // Main Function
 //===========================================================================
@@ -161,8 +168,9 @@ int main(int argc, char *argv[]) {
   el::Loggers::addFlag(el::LoggingFlag::ColoredTerminalOutput);
 
   MPI_Init(&argc, &argv);
+  int exit_code = 1;
 
-  try {
+  auto run = [&]() -> int {
     //=======================================================================
     // Command-Line Argument Parsing
     //=======================================================================
@@ -388,7 +396,9 @@ int main(int argc, char *argv[]) {
     config.verbose = verbose;
 
     // Apply coordinate variable overrides (bypasses format detection)
-    config.coord_var_names = {"lon", "lat"};
+    config.coord_var_names = {
+        lon_variable.empty() ? "lon" : lon_variable,
+        lat_variable.empty() ? "lat" : lat_variable};
 
     // Apply field name overrides (replaces auto-detection)
     if (!fields_string_list.empty()) {
@@ -446,8 +456,18 @@ int main(int argc, char *argv[]) {
 
       // Determine remapping method from command-line argument
       RemapperFactory::RemapMethod method = RemapperFactory::ALG_DISKAVERAGE;
-      if (remap_method == "NEAREST_NEIGHBOR" || remap_method == "NN") {
+      const std::string normalized_method = uppercase_string(remap_method);
+      if (normalized_method == "DA" || normalized_method == "ALG_DISKAVERAGE" ||
+          normalized_method == "DISKAVERAGE") {
+        method = RemapperFactory::ALG_DISKAVERAGE;
+      } else if (normalized_method == "NEAREST_NEIGHBOR" ||
+                 normalized_method == "ALG_NEAREST_NEIGHBOR" ||
+                 normalized_method == "NN") {
         method = RemapperFactory::ALG_NEAREST_NEIGHBOR;
+      } else {
+        LOG(ERROR) << "Unknown remap method '" << remap_method
+                   << "'. Valid options: da, nn";
+        return 1;
       }
 
       // Create appropriate remapper using factory pattern
@@ -565,13 +585,18 @@ int main(int argc, char *argv[]) {
     LOG(INFO) << "====================================";
     LOG(INFO) << "=== mbda completed successfully! ===";
     LOG(INFO) << "====================================";
+    return 0;
+  };
+
+  try {
+    exit_code = run();
   } catch (const std::exception &e) {
     // Handle any exceptions that escaped the normal error handling
     LOG(FATAL) << "Exception: " << e.what();
-    return 1;
+    exit_code = 1;
   }
 
   // Finalize MPI and exit
   MPI_Finalize();
-  return 0;
+  return exit_code;
 }
