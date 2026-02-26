@@ -34,30 +34,6 @@
 namespace moab {
 
 //===========================================================================
-// Utility Functions
-//===========================================================================
-
-namespace {
-/**
- * @brief Convert source vector to double vector
- *
- * Utility function to convert any numeric type vector to double precision.
- * Used for type conversion when reading scalar variables from NetCDF.
- *
- * @tparam SrcVec Source vector type
- * @param input Input vector
- * @param output Output double vector
- */
-template <typename SrcVec>
-void copy_to_double_vector(const SrcVec &input, std::vector<double> &output) {
-  output.resize(input.size());
-  for (size_t i = 0; i < input.size(); ++i) {
-    output[i] = static_cast<double>(input[i]);
-  }
-}
-} // namespace
-
-//===========================================================================
 // Constructor and Destructor
 //===========================================================================
 

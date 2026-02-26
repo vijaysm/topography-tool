@@ -36,7 +36,6 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "MBDAUtilities.hpp"
@@ -88,22 +87,7 @@ public:
   /// Dimension constant for 2D coordinate systems
   static constexpr int DIM = 2;
 
-  /**
-   * @brief Custom hash function for PointType to detect duplicates
-   *
-   * Uses integer quantization to handle floating-point precision issues
-   * when detecting duplicate points in unstructured point clouds.
-   */
-  struct PointHash {
-    std::size_t operator()(const PointType &p) const {
-      // Quantize to 7 decimal places (~1cm precision)
-      long long lon_int = static_cast<long long>(p[0] * 1e7);
-      long long lat_int = static_cast<long long>(p[1] * 1e7);
-      // Combine hashes using bit manipulation
-      return std::hash<long long>{}(lon_int) ^
-             (std::hash<long long>{}(lat_int) << 1);
-    }
-  };
+  // Duplicate-point tracking was removed because no path consumes it.
 
   /**
    * @brief Axis-aligned bounding box for spatial queries
@@ -528,9 +512,6 @@ private:
   size_t nlats_start, nlons_start; // Local decomposition start indices
   size_t nlats_count, nlons_count; // Local decomposition counts
   std::string lon_var_name, lat_var_name, topo_var_name, fract_var_name;
-
-  /// For tracking unique points to avoid duplicates in unstructured data
-  std::unordered_set<PointType, PointHash> m_unique_points;
 
   //=======================================================================
   // Initialization Methods
