@@ -539,25 +539,30 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(
           size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
           size_t num_chunks = (count + chunk_size - 1) / chunk_size;
 
-          LOG(INFO) << "Reading coordinates in " << num_chunks << " chunks of up to "
-                    << chunk_size << " elements each";
+          LOG(INFO) << "Reading coordinates in " << num_chunks
+                    << " chunks of up to " << chunk_size << " elements each";
 
           coords.resize(count);
 
           // Read data chunk by chunk
           for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
             size_t current_start = start_idx + chunk_idx * chunk_size;
-            size_t current_count = std::min(chunk_size, count - chunk_idx * chunk_size);
+            size_t current_count =
+                std::min(chunk_size, count - chunk_idx * chunk_size);
 
-            LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/" << num_chunks
-                      << " (coordinates " << (chunk_idx * chunk_size) << " to "
+            LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/"
+                      << num_chunks << " (coordinates "
+                      << (chunk_idx * chunk_size) << " to "
                       << (chunk_idx * chunk_size + current_count - 1) << ")";
 
             // Set up NetCDF hyperslab parameters
-            std::vector<MPI_Offset> chunk_start = {static_cast<MPI_Offset>(current_start)};
-            std::vector<MPI_Offset> chunk_count = {static_cast<MPI_Offset>(current_count)};
+            std::vector<MPI_Offset> chunk_start = {
+                static_cast<MPI_Offset>(current_start)};
+            std::vector<MPI_Offset> chunk_count = {
+                static_cast<MPI_Offset>(current_count)};
 
-            std::vector<CoordinateType> x_chunk(current_count), y_chunk(current_count);
+            std::vector<CoordinateType> x_chunk(current_count),
+                y_chunk(current_count);
             x_var.getVar_all(chunk_start, chunk_count, x_chunk.data());
             y_var.getVar_all(chunk_start, chunk_count, y_chunk.data());
 
@@ -583,7 +588,7 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(
             coords[i] = {x_coords[i], y_coords[i]};
           }
         }
-        
+
         return MB_SUCCESS;
       }
     } else if (x_ndims == 2 && y_ndims == 2) {
@@ -693,18 +698,22 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(
         // Read data chunk by chunk
         for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
           size_t current_start = start_idx + chunk_idx * chunk_size;
-          size_t current_count = std::min(chunk_size, count - chunk_idx * chunk_size);
+          size_t current_count =
+              std::min(chunk_size, count - chunk_idx * chunk_size);
 
           LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/" << num_chunks
                     << " (elements " << (chunk_idx * chunk_size) << " to "
                     << (chunk_idx * chunk_size + current_count - 1) << ")";
 
           // Set up NetCDF hyperslab parameters
-          std::vector<MPI_Offset> chunk_start = {static_cast<MPI_Offset>(current_start)};
-          std::vector<MPI_Offset> chunk_count = {static_cast<MPI_Offset>(current_count)};
+          std::vector<MPI_Offset> chunk_start = {
+              static_cast<MPI_Offset>(current_start)};
+          std::vector<MPI_Offset> chunk_count = {
+              static_cast<MPI_Offset>(current_count)};
 
           // Read chunk directly into the data buffer at the correct offset
-          var.getVar_all(chunk_start, chunk_count, data.data() + chunk_idx * chunk_size);
+          var.getVar_all(chunk_start, chunk_count,
+                         data.data() + chunk_idx * chunk_size);
         }
       } else {
         // Read all data at once for smaller datasets
@@ -828,8 +837,7 @@ moab::ParallelPointCloudReader::read_all_data(PointData &local_points) {
 
   if (m_is_usgs_format) {
     nlats_start = (static_cast<size_t>(rank) * nlats) / comm_size;
-    const size_t lat_end =
-        (static_cast<size_t>(rank + 1) * nlats) / comm_size;
+    const size_t lat_end = (static_cast<size_t>(rank + 1) * nlats) / comm_size;
     nlats_count = lat_end - nlats_start;
     nlons_start = 0;
     nlons_count = nlons;
@@ -914,8 +922,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
     // Read scalar variables with buffered reading for large datasets
     for (const auto &var_name : m_config.scalar_var_names) {
       std::vector<double> scalar_data;
-      MB_CHK_ERR(read_scalar_variable_chunk(var_name, start_idx, count,
-                                            scalar_data));
+      MB_CHK_ERR(
+          read_scalar_variable_chunk(var_name, start_idx, count, scalar_data));
 
       // The scalar data is read in the same order as coordinates, so
       // no filtering needed
@@ -924,13 +932,12 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
 
       chunk_data.scalar_variables[var_name] = std::move(scalar_data);
 
-      if (chunk_data.scalar_variables[var_name].size() !=
-          chunk_data.size()) {
+      if (chunk_data.scalar_variables[var_name].size() != chunk_data.size()) {
         LOG(ERROR) << "WARNING: Scalar variable '" << var_name
-                    << "' has a different size ("
-                    << chunk_data.scalar_variables[var_name].size()
-                    << ") than the total points (" << chunk_data.size()
-                    << "). Data may be misaligned.";
+                   << "' has a different size ("
+                   << chunk_data.scalar_variables[var_name].size()
+                   << ") than the total points (" << chunk_data.size()
+                   << "). Data may be misaligned.";
       }
     }
 
@@ -950,8 +957,7 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
           chunk_data.scalar_variables[squared_name] = std::move(squared_data);
           LOG(INFO) << "Computed squared field: " << squared_name;
         } else {
-          LOG(ERROR) << "Field '" << field_name
-                     << "' not found for squaring";
+          LOG(ERROR) << "Field '" << field_name << "' not found for squaring";
           return MB_FAILURE;
         }
       }
@@ -976,8 +982,7 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
     }
 
     LOG(INFO) << "Read " << chunk_data.size() << " points with "
-              << chunk_data.scalar_variables.size()
-              << " scalar variables";
+              << chunk_data.scalar_variables.size() << " scalar variables";
     if (!chunk_data.areas.empty()) {
       LOG(INFO) << " and area data";
     }

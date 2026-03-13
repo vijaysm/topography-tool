@@ -559,9 +559,9 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
       auto write_checked_variable = [&](const std::string &name) -> ErrorCode {
         auto it = vars.find(name);
         if (it == vars.end()) {
-          MB_SET_ERR(MB_FAILURE,
-                     "Requested variable '" << name
-                                            << "' is missing from template file");
+          MB_SET_ERR(MB_FAILURE, "Requested variable '"
+                                     << name
+                                     << "' is missing from template file");
         }
 
         const auto &variable = it->second;
@@ -605,7 +605,6 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
       //     const std::string var_name = base_name + "_squared";
       //     MB_CHK_ERR( write_variable( var_name ) );
       // }
-
     }
   } catch (const std::filesystem::filesystem_error &e) {
     MB_SET_ERR(MB_FAILURE, "File copy error for NetCDF output: " << e.what());
@@ -735,13 +734,12 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
 
       // Check if chunked writing is needed for large datasets
       size_t num_entities = values.size();
-      bool use_chunked_writing =
-          num_entities > MAX_ELEMENTS_PER_CHUNK;
+      bool use_chunked_writing = num_entities > MAX_ELEMENTS_PER_CHUNK;
 
       if (use_chunked_writing) {
         LOG(INFO) << "Using chunked writing for " << num_entities
-                  << " entities (exceeds "
-                  << MAX_ELEMENTS_PER_CHUNK << " limit)";
+                  << " entities (exceeds " << MAX_ELEMENTS_PER_CHUNK
+                  << " limit)";
 
         // Calculate chunk size
         size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;

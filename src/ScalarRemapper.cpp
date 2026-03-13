@@ -276,8 +276,7 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
             weighted_sum += values[pt_idx];
           }
         }
-      }
-      else {
+      } else {
         LOG(ERROR) << "Variable " << var_name << " not found in point data";
         element_errors[elem_idx] = MB_FAILURE;
         continue;
@@ -311,8 +310,7 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
       auto d_it = m_mesh_data.scalar_fields.find(var_name);
       if (d_it != m_mesh_data.scalar_fields.end()) {
         values[i] = d_it->second[i];
-      }
-      else {
+      } else {
         LOG(ERROR) << "Variable " << var_name << " not found in mesh data";
       }
     }
@@ -1440,8 +1438,7 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
                 weight_sum += inv_weights[k];
               }
             }
-          }
-          else {
+          } else {
             LOG(ERROR) << "Variable " << var_name << " not found in point data";
           }
 

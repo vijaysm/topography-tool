@@ -396,9 +396,8 @@ int main(int argc, char *argv[]) {
     config.verbose = verbose;
 
     // Apply coordinate variable overrides (bypasses format detection)
-    config.coord_var_names = {
-        lon_variable.empty() ? "lon" : lon_variable,
-        lat_variable.empty() ? "lat" : lat_variable};
+    config.coord_var_names = {lon_variable.empty() ? "lon" : lon_variable,
+                              lat_variable.empty() ? "lat" : lat_variable};
 
     // Apply field name overrides (replaces auto-detection)
     if (!fields_string_list.empty()) {
