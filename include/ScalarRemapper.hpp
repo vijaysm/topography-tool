@@ -177,17 +177,19 @@ public:
   const MeshData &get_mesh_data() const { return m_mesh_data; }
   ErrorCode write_to_tags(const std::string &tag_prefix = "");
 
-protected:
   // Abstract method to be implemented by derived classes
-  virtual ErrorCode
-  perform_remapping(const ParallelPointCloudReader::PointData &point_data) = 0;
-
-  // Abstract method to be implemented by derived classes
-  virtual ErrorCode
+  ErrorCode
+  perform_mba_remapping(const ParallelPointCloudReader::PointData &point_data);
+  ErrorCode
   perform_self_remapping(const ParallelPointCloudReader::PointData &point_data);
   ErrorCode smoothen_field_constant_area_averaging(
       const ParallelPointCloudReader::PointData &point_data,
       double constant_area);
+
+protected:
+  // Abstract method to be implemented by derived classes
+  virtual ErrorCode
+  perform_remapping(const ParallelPointCloudReader::PointData &point_data) = 0;
 
   // Utility methods
   ErrorCode extract_mesh_centroids();
@@ -244,6 +246,23 @@ protected:
 };
 
 /**
+ * @brief Nearest neighbor remapping implementation
+ *
+ * Maps each mesh element centroid to the value of the nearest point cloud
+ * point. This is the simplest and fastest remapping method, suitable for dense
+ * point clouds.
+ */
+class MBARemapper : public ScalarRemapper {
+public:
+  MBARemapper(Interface *interface, EntityHandle mesh_set);
+  ~MBARemapper();
+
+protected:
+  ErrorCode perform_remapping(
+      const ParallelPointCloudReader::PointData &point_data) override;
+};
+
+/**
  * @brief Point cloud to spectral element projection remapper
  *
  * Implements the LinearRemapFVtoGLL_Averaged algorithm for projecting point
@@ -279,7 +298,8 @@ class RemapperFactory {
 public:
   enum RemapMethod {
     ALG_DISKAVERAGE, // Default: Point cloud disk averaged projection
-    ALG_NEAREST_NEIGHBOR
+    ALG_NEAREST_NEIGHBOR,
+    ALG_MBA
   };
 
   static std::unique_ptr<ScalarRemapper> create_remapper(RemapMethod method,

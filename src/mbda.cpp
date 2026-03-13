@@ -448,6 +448,8 @@ int main(int argc, char *argv[]) {
       RemapperFactory::RemapMethod method = RemapperFactory::ALG_DISKAVERAGE;
       if (remap_method == "NEAREST_NEIGHBOR" || remap_method == "NN") {
         method = RemapperFactory::ALG_NEAREST_NEIGHBOR;
+      } else if (remap_method == "MBA") {
+        method = RemapperFactory::ALG_MBA;
       }
 
       // Create appropriate remapper using factory pattern

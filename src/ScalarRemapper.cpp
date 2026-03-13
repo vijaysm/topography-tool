@@ -25,9 +25,12 @@
 
 #include "ScalarRemapper.hpp"
 #include "GaussLobattoQuadrature.hpp"
+#include "MonotoneBicubicLatLonInterpolator.hpp"
 #include "easylogging.hpp"
+#include "mba.hpp"
 #include "moab/CartVect.hpp"
 #include "moab/IntxMesh/IntxUtils.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -612,6 +615,25 @@ NearestNeighborRemapper::~NearestNeighborRemapper() {
 }
 
 //===========================================================================
+// MBA Remapper Implementation
+//===========================================================================
+
+/**
+ * @brief Constructor for NearestNeighborRemapper
+ * @param interface MOAB interface instance
+ * @param mesh_set Mesh set containing target elements
+ */
+MBARemapper::MBARemapper(Interface *interface, EntityHandle mesh_set)
+    : ScalarRemapper(interface, mesh_set) {}
+
+/**
+ * @brief Destructor - KD-tree cleanup handled automatically by unique_ptr
+ */
+MBARemapper::~MBARemapper() {
+  // KD-tree cleanup handled automatically by unique_ptr
+}
+
+//===========================================================================
 // Spatial Index Construction Methods
 //===========================================================================
 
@@ -860,6 +882,139 @@ ErrorCode NearestNeighborRemapper::perform_remapping(
 }
 
 /**
+ * @brief Perform nearest neighbor remapping
+ *
+ * Algorithm:
+ * 1. Build spatial index (KD-tree or RegularGridLocator)
+ * 2. For each mesh element centroid, find the nearest point cloud point
+ * 3. Copy scalar values from nearest point to mesh element
+ *
+ * This is the simplest and fastest remapping method, suitable for
+ * dense point clouds where high accuracy is not required.
+ *
+ * @param point_data Input point cloud data with scalar fields
+ * @return MB_SUCCESS on success, error code otherwise
+ */
+ErrorCode MBARemapper::perform_remapping(
+    const ParallelPointCloudReader::PointData &point_data) {
+  if (point_data.size() == 0) {
+    LOG(INFO) << "No point cloud data available for remapping";
+    return MB_SUCCESS;
+  }
+
+  // Build spatial index for efficient nearest neighbor queries
+  // if (m_config.is_usgs_format && !m_config.use_kd_tree) {
+  //     if (!m_grid_locator_built) {
+  //         MB_CHK_ERR(build_grid_locator(point_data));
+  //     }
+  // } else {
+  //     if (!m_kdtree_built) {
+  //         MB_CHK_ERR(build_kdtree(point_data));
+  //     }
+  // }
+
+  // Create the MBARemapper
+  // const std::vector<mba::point<2>>& coo = point_data.lonlat_coordinates;
+  std::vector<mba::point<2>> coo(point_data.size());
+  std::vector<double> val;
+  // double min_x = point_data.longitude(0);
+  // double max_x = point_data.longitude(0);
+  // double min_y = point_data.latitude(0);
+  // double max_y = point_data.latitude(0);
+#pragma omp parallel for shared(point_data, coo)
+  for (size_t point_idx = 0; point_idx < point_data.size(); point_idx++) {
+    const double x_coord = point_data.longitude(point_idx);
+    const double y_coord = point_data.latitude(point_idx);
+    // const double current_value = point_data.z[point_idx];
+    coo[point_idx] = {x_coord, y_coord};
+    // val.push_back(current_value);
+    // min_x = std::min(min_x, x_coord);
+    // max_x = std::max(max_x, x_coord);
+    // min_y = std::min(min_y, y_coord);
+    // max_y = std::max(max_y, y_coord);
+  }
+
+  // now for each scalar variable, copy the values to the val vector
+  // and compute the MBA and compute the remapped values
+  for (const auto &var_name : m_config.scalar_var_names) {
+    val.resize(point_data.size(), 0.0);
+    // Handle double precision variables
+    auto var_it = point_data.d_scalar_variables.find(var_name);
+    if (var_it != point_data.d_scalar_variables.end()) {
+      std::copy(var_it->second.begin(), var_it->second.end(), val.begin());
+    } else {
+      // Handle integer variables
+      auto ivar_it = point_data.i_scalar_variables.find(var_name);
+      if (ivar_it != point_data.i_scalar_variables.end()) {
+        std::copy(ivar_it->second.begin(), ivar_it->second.end(), val.begin());
+      }
+    }
+
+#ifndef MBA
+    size_t nlon, nlat;
+    point_data.get_grid_dimensions(nlat, nlon);
+    LOG(INFO)
+        << "MBARemapper: Using monotone-Cubic interpolator with compact basis.";
+    MonotoneBicubicLatLonInterpolator interp(val, nlat, nlon);
+#else
+    double min_x = 0.0;
+    double max_x = 360.0;
+    double min_y = -90.0;
+    double max_y = 90.0;
+    // Build the MBARemapper
+    // let the low/high be in the same units as the point data
+    mba::point<2> lo = {min_x, min_y};
+    mba::point<2> hi = {max_x, max_y};
+    LOG(INFO) << "MBARemapper: Using the Multilevel B-Spline approximant. ["
+              << lo[0] << ", " << hi[0] << "], [" << lo[1] << ", " << hi[1];
+    // Initial grid size.
+    mba::index<2> grid = {4, 2};
+
+    // Algorithm setup.
+    mba::MBA<2> interp(lo, hi, grid, coo, val);
+#endif
+    const auto &centroids = m_mesh_data.centroids;
+
+    var_it = point_data.d_scalar_variables.find(var_name);
+    if (var_it != point_data.d_scalar_variables.end()) {
+      auto &remapped_values = m_mesh_data.d_scalar_fields[var_name];
+      remapped_values.resize(centroids.size(), 0.0);
+#pragma omp parallel for shared(m_mesh_data, remapped_values, interp)
+      for (size_t elem_idx = 0; elem_idx < centroids.size(); ++elem_idx) {
+        double x, y;
+        XYZtoRLL_Deg(centroids[elem_idx].data(), x, y);
+#ifndef MBA
+        remapped_values[elem_idx] = interp.evaluate_scalar(x, y);
+#else
+        remapped_values[elem_idx] = interp(mba::point<2>{x, y});
+#endif
+      }
+    } else {
+      // Handle integer variables
+      auto ivar_it = point_data.i_scalar_variables.find(var_name);
+      if (ivar_it != point_data.i_scalar_variables.end()) {
+        auto &remapped_values = m_mesh_data.i_scalar_fields[var_name];
+        remapped_values.resize(centroids.size(), 0);
+#pragma omp parallel for shared(m_mesh_data, remapped_values, interp)
+        for (size_t elem_idx = 0; elem_idx < centroids.size(); ++elem_idx) {
+          double x, y;
+          XYZtoRLL_Deg(centroids[elem_idx].data(), x, y);
+#ifndef MBA
+          remapped_values[elem_idx] =
+              static_cast<int>(interp.evaluate_scalar(x, y));
+#else
+          remapped_values[elem_idx] =
+              static_cast<int>(interp(mba::point<2>{x, y}));
+#endif
+        }
+      }
+    }
+  }
+
+  return MB_SUCCESS;
+}
+
+/**
  * @brief Find nearest points to a target location using spatial indexing
  *
  * This method provides a unified interface for spatial queries using either:
@@ -1068,6 +1223,11 @@ RemapperFactory::create_remapper(RemapMethod method, Interface *interface,
     // Fast nearest neighbor mapping
     return std::unique_ptr<ScalarRemapper>(
         new NearestNeighborRemapper(interface, mesh_set));
+
+  case ALG_MBA:
+    // Fast nearest neighbor mapping
+    return std::unique_ptr<ScalarRemapper>(
+        new MBARemapper(interface, mesh_set));
 
   default:
     std::cerr << "Unknown remapping method";
