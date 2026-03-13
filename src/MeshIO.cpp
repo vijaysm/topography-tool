@@ -261,9 +261,6 @@ ErrorCode NetcdfMeshIO::load_point_cloud_from_file(
                         : " (" + options.context_label + ")");
     }
 
-    // Close NetCDF file after reading data
-    ncmpi_close(nc.getId());
-
     Range vertEnts;
     MB_CHK_SET_ERR(mb->get_entities_by_dimension(mesh_set, 0, vertEnts),
                    "Failed to get vertices");
@@ -376,7 +373,6 @@ ErrorCode fetch_tag_as_type(Interface *mb, Tag tag,
 template <typename T>
 static ErrorCode write_variable(const PnetCDF::NcmpiVar &var,
                                 const ScalarRemapper::MeshData &mesh_data) {
-
   // Get variable dimensions
   std::vector<PnetCDF::NcmpiDim> dims = var.getDims();
   for (const auto &dim : dims) {
@@ -468,9 +464,9 @@ static ErrorCode write_variable(const PnetCDF::NcmpiVar &var,
         var.putVar(castValues.data());
       }
     }
-  }
-  else {
-    MB_SET_ERR(MB_FAILURE, "Variable not found in MeshData");
+  } else {
+    MB_SET_ERR(MB_FAILURE, "Variable '" << var.getName()
+                                        << "' is missing in remapped data");
   }
 
   return MB_SUCCESS;
@@ -560,31 +556,41 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
       }
 
       auto vars = out.getVars();
-      for (const auto &name : request.scalar_var_names) {
-        for (const auto &ncvar : vars) {
-          if (ncvar.first == name) {
-            const auto &variable = ncvar.second;
-            if (variable.getType() == PnetCDF::ncmpiFloat) {
-              MB_CHK_ERR(write_variable<float>(variable, mesh_data));
-            } else if (variable.getType() == PnetCDF::ncmpiDouble) {
-              MB_CHK_ERR(write_variable<double>(variable, mesh_data));
-            } else if (variable.getType() == PnetCDF::ncmpiInt) {
-              MB_CHK_ERR(write_variable<int>(variable, mesh_data));
-            } else if (variable.getType() == PnetCDF::ncmpiShort) {
-              MB_CHK_ERR(write_variable<short>(variable, mesh_data));
-            } else if (variable.getType() == PnetCDF::ncmpiByte) {
-              MB_CHK_ERR(write_variable<signed char>(variable, mesh_data));
-            } else {
-              throw std::logic_error(
-                  "Unsupported variable type for NetCDF write");
-            }
-
-            if (request.verbose) {
-              LOG(INFO) << "Wrote NetCDF variable " << ncvar.first << " to "
-                        << output_file;
-            }
-          }
+      auto write_checked_variable = [&](const std::string &name) -> ErrorCode {
+        auto it = vars.find(name);
+        if (it == vars.end()) {
+          MB_SET_ERR(MB_FAILURE,
+                     "Requested variable '" << name
+                                            << "' is missing from template file");
         }
+
+        const auto &variable = it->second;
+        if (variable.getType() == PnetCDF::ncmpiFloat) {
+          MB_CHK_ERR(write_variable<float>(variable, mesh_data));
+        } else if (variable.getType() == PnetCDF::ncmpiDouble) {
+          MB_CHK_ERR(write_variable<double>(variable, mesh_data));
+        } else if (variable.getType() == PnetCDF::ncmpiInt) {
+          MB_CHK_ERR(write_variable<int>(variable, mesh_data));
+        } else if (variable.getType() == PnetCDF::ncmpiShort) {
+          MB_CHK_ERR(write_variable<short>(variable, mesh_data));
+        } else if (variable.getType() == PnetCDF::ncmpiByte) {
+          MB_CHK_ERR(write_variable<signed char>(variable, mesh_data));
+        } else {
+          throw std::logic_error("Unsupported variable type for NetCDF write");
+        }
+
+        if (request.verbose) {
+          LOG(INFO) << "Wrote NetCDF variable " << name << " to "
+                    << output_file;
+        }
+        return MB_SUCCESS;
+      };
+
+      for (const auto &name : request.scalar_var_names) {
+        MB_CHK_ERR(write_checked_variable(name));
+      }
+      for (const auto &base_name : request.squared_var_names) {
+        MB_CHK_ERR(write_checked_variable(base_name + "_squared"));
       }
 
       // End independent data mode if you are done with independent operations
@@ -600,7 +606,6 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
       //     MB_CHK_ERR( write_variable( var_name ) );
       // }
 
-      ncmpi_close(out.getId());
     }
   } catch (const std::filesystem::filesystem_error &e) {
     MB_SET_ERR(MB_FAILURE, "File copy error for NetCDF output: " << e.what());
@@ -698,6 +703,12 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
     dims.push_back(dim);
 
     auto define_variable = [&](const std::string &var_name) {
+      auto vars = out.getVars();
+      if (vars.find(var_name) != vars.end()) {
+        // if it already exists, remove it (probably part of original file)
+        // out.removeVar(var_name);
+        return;
+      }
       if constexpr (std::is_same_v<TagValueType, float>) {
         out.addVar(var_name, PnetCDF::ncmpiFloat, dims);
       } else {
@@ -780,7 +791,6 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
       MB_CHK_ERR(write_variable(var_name));
     }
 
-    ncmpi_close(out.getId());
   } catch (const std::filesystem::filesystem_error &e) {
     MB_SET_ERR(MB_FAILURE, "File copy error for NetCDF output: " << e.what());
   } catch (const PnetCDF::exceptions::NcmpiException &e) {

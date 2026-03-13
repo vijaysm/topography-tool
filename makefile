@@ -35,6 +35,9 @@ mbda: $(OBJ_FILES)
 
 run: all $(addprefix run-,$(ALLEXAMPLES))
 
+test-regression:
+	bash tests/regression_checks.sh
+
 format:
 	find . -iname '*.hpp' -o -iname '*.cpp' | xargs clang-format -i --style=LLVM
 
@@ -44,4 +47,3 @@ format:
 clean: clobber
 	rm -rf ${ALLEXAMPLES}
 	rm -rf $(OBJ_FILES)
-

@@ -1195,70 +1195,7 @@ double Remapper_GenerateFEMetaData(Interface *mb, EntityHandle face,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// ----------------------
-// KD-tree point cloud
-// ----------------------
-struct MOABCentroidCloud {
-  constexpr static int DIM = 3;
-  std::vector<std::array<double, DIM>> points;
-  std::vector<moab::EntityHandle> elements;
-
-  inline void init(size_t length) {
-    points.reserve(length);
-    elements.reserve(length);
-  }
-
-  inline size_t kdtree_get_point_count() const { return points.size(); }
-
-  inline double kdtree_get_pt(const size_t idx, const size_t dim) const {
-    return points[idx][dim];
-  }
-
-  template <class BBOX> bool kdtree_get_bbox(BBOX &) const { return false; }
-};
-
-// ----------------------
-// Radius search wrapper
-// ----------------------
-std::vector<size_t>
-radius_search_kdtree(const KDTree &tree, const MOABCentroidCloud &cloud,
-                     const std::array<CoordinateType, 3> &query_pt,
-                     CoordinateType radius) {
-  CoordinateType radius_sq = radius * radius;
-  // CoordinateType radius_sq = radius;
-  std::vector<nanoflann::ResultItem<size_t, CoordinateType>> matches;
-  nanoflann::SearchParameters params;
-  params.sorted = true;
-
-  const CoordinateType query_pt_sq = query_pt[0] * query_pt[0] +
-                                     query_pt[1] * query_pt[1] +
-                                     query_pt[2] * query_pt[2];
-  if (query_pt_sq > 1.0 - 1e-10 &&
-      query_pt_sq < 1.0 + 1.0e-10) // Check if the point is on the unit sphere
-  {
-    LOG(FATAL) << "Point " << query_pt[0] << ", " << query_pt[1] << ", "
-               << query_pt[2] << " is not on the unit sphere";
-    throw std::runtime_error("Point is not on the unit sphere");
-  }
-
-  tree.radiusSearch(query_pt.data(), radius_sq, matches, params);
-
-  std::vector<size_t> found_elements;
-  if (!matches.empty()) {
-    // Return all matches within the radius
-    for (const auto &match : matches)
-      found_elements.emplace_back(cloud.elements[match.first]);
-  } else {
-    // Fallback to nearest neighbor
-    size_t nearest_index;
-    CoordinateType nearest_dist_sq;
-    tree.knnSearch(query_pt.data(), 1, &nearest_index, &nearest_dist_sq);
-    found_elements.emplace_back(cloud.elements[nearest_index]);
-  }
-
-  return found_elements;
-}
-
+// Unused KD-tree centroid helper path removed.
 ///////////////////////////////////////////////////////////////////////////////
 
 // PCDiskAveragedProjectionRemapper Implementation
@@ -1357,7 +1294,9 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
                m_interface)
   for (size_t elem_idx = 0; elem_idx < m_mesh_data.elements.size();
        ++elem_idx) {
-    if ((elem_idx % (m_mesh_data.elements.size() / 10)) == 0) {
+    const size_t output_frequency =
+        std::max<size_t>(1, m_mesh_data.elements.size() / 10);
+    if ((elem_idx % output_frequency) == 0) {
 #pragma omp critical
       LOG(INFO) << "Processing element " + std::to_string(elem_idx) + " of " +
                        std::to_string(m_mesh_data.elements.size());
@@ -1596,7 +1535,7 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
   MB_CHK_ERR(m_interface->tag_get_data(areaTag, elements.data(),
                                        elements.size(), vertex_areas.data()));
 
-  const size_t output_frequency = elements.size() / 10;
+  const size_t output_frequency = std::max<size_t>(1, elements.size() / 10);
 #pragma omp parallel for schedule(dynamic, 1)                                  \
     shared(m_kdtree, element_errors, point_data, m_mesh_data, m_config,        \
                m_interface, vertex_coords, vertex_areas)
