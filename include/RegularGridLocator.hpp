@@ -100,6 +100,27 @@ private:
   }
 
   /**
+   * @brief Normalize longitude into this grid's longitude window
+   *
+   * Handles both [0,360) and [-180,180) conventions by normalizing
+   * to the grid's actual [m_lon_min, m_lon_max] range.
+   *
+   * @param lon Input longitude in degrees
+   * @return Normalized longitude in degrees within grid range
+   */
+  double normalize_longitude_to_grid(double lon) const {
+    if (m_nlon == 0) {
+      return lon;
+    }
+    const double period = 360.0;
+    while (lon < m_lon_min)
+      lon += period;
+    while (lon > m_lon_max)
+      lon -= period;
+    return lon;
+  }
+
+  /**
    * @brief Check if latitude is at or very close to a pole
    */
   bool is_at_pole(double lat) const {

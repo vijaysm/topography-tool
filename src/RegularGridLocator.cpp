@@ -12,6 +12,7 @@
  * - Haversine (great circle) and Euclidean distance metrics
  * - Thread-safe for parallel queries
  * - Handles longitude wraparound and pole special cases
+ * - Proper cross-pole radius search handling
  * - Efficient spiral search for k-nearest neighbors
  *
  * Author: Vijay Mahadevan
@@ -111,22 +112,27 @@ size_t RegularGridLocator::find_nearest_index(const std::vector<double> &coords,
  * @brief Find index bounds for radius search
  *
  * Computes the latitude and longitude index ranges that should be searched
- * for a radius query. Handles longitude wraparound and pole special cases.
+ * for a radius query. Handles longitude wraparound and pole crossing.
  *
  * Algorithm:
- * 1. Normalize query longitude
- * 2. Compute latitude bounds (simple clipping)
+ * 1. Normalize query longitude to grid range
+ * 2. Compute latitude bounds with pole-crossing detection
  * 3. Compute longitude bounds with wraparound detection
  * 4. Adjust longitude radius for latitude compression at poles
  *
+ * For pole crossing: if query_lat + radius > 90 or query_lat - radius < -90,
+ * the search region "wraps over" the pole. In spherical geometry, this means
+ * points at lat=89 with lon=X and lat=89 with lon=X+180 are both close to the
+ * pole. When crossing a pole, we must search all longitudes.
+ *
  * @param query_lon Query longitude (degrees)
  * @param query_lat Query latitude (degrees)
- * @param radius Search radius (degrees)
+ * @param radius Search radius (degrees, angular distance)
  * @param ilat_min Output: minimum latitude index
  * @param ilat_max Output: maximum latitude index
  * @param ilon_min Output: minimum longitude index
  * @param ilon_max Output: maximum longitude index
- * @param wraps_around Output: true if longitude range wraps around
+ * @param wraps_around Output: true if longitude range wraps around (including pole crossing)
  */
 void RegularGridLocator::get_search_bounds(double query_lon, double query_lat,
                                            double radius, size_t &ilat_min,
@@ -136,39 +142,118 @@ void RegularGridLocator::get_search_bounds(double query_lon, double query_lat,
   wraps_around = false;
 
   // Normalize query longitude to grid range
-  query_lon = normalize_longitude(query_lon);
+  query_lon = normalize_longitude_to_grid(query_lon);
 
-  double factor = 1.1; // 10% conservative to get overlap
-  radius *= factor;
-  // Latitude bounds (simple clipping, no wraparound)
-  double lat_search_min = std::max(m_lat_min, query_lat - radius);
-  double lat_search_max = std::min(m_lat_max, query_lat + radius);
+  // Conservative expansion factor to account for discrete grid sampling
+  // and ensure we don't miss boundary cases
+  double factor = 1.15;
+  double expanded_radius = radius * factor;
+
+  // Compute raw latitude bounds
+  double lat_search_min = query_lat - expanded_radius;
+  double lat_search_max = query_lat + expanded_radius;
+
+  // Check for pole crossing
+  // If radius extends past a pole, points on the "other side" of the pole
+  // (180 degrees away in longitude) are actually within the radius
+  bool crosses_north_pole = lat_search_max > 90.0;
+  bool crosses_south_pole = lat_search_min < -90.0;
+
+  if (crosses_north_pole || crosses_south_pole) {
+    // Pole crossing: we must search all longitudes
+    wraps_around = true;
+
+    if (crosses_north_pole && crosses_south_pole) {
+      // Radius spans both poles - search entire grid
+      ilat_min = 0;
+      ilat_max = m_nlat - 1;
+    } else if (crosses_north_pole) {
+      // Crossing north pole: the "reflected" latitude is 180 - lat_search_max
+      // Points at lat > (180 - lat_search_max) with lon+180 are within radius
+      double reflected_lat = 180.0 - lat_search_max;
+      lat_search_min = std::min(lat_search_min, reflected_lat);
+      lat_search_max = 90.0;
+      lat_search_min = std::max(m_lat_min, lat_search_min);
+      ilat_min = find_nearest_index(m_lats, lat_search_min);
+      ilat_max = m_nlat - 1; // Include up to the pole
+    } else {
+      // Crossing south pole: reflected latitude is -180 - lat_search_min
+      double reflected_lat = -180.0 - lat_search_min;
+      lat_search_max = std::max(lat_search_max, reflected_lat);
+      lat_search_min = -90.0;
+      lat_search_max = std::min(m_lat_max, lat_search_max);
+      ilat_min = 0; // Include down to the pole
+      ilat_max = find_nearest_index(m_lats, lat_search_max);
+    }
+
+    // Ensure ilat_min <= ilat_max
+    if (ilat_min > ilat_max)
+      std::swap(ilat_min, ilat_max);
+
+    // All longitudes for pole crossing
+    ilon_min = 0;
+    ilon_max = m_nlon - 1;
+    return;
+  }
+
+  // No pole crossing - standard latitude clipping
+  lat_search_min = std::max(m_lat_min, lat_search_min);
+  lat_search_max = std::min(m_lat_max, lat_search_max);
 
   ilat_min = find_nearest_index(m_lats, lat_search_min);
   ilat_max = find_nearest_index(m_lats, lat_search_max);
 
-  // Longitude bounds with wraparound handling
-  // At high latitudes, longitude spacing becomes
-  // compressed due to convergence at poles
-  // Let us use a conservative estimate to account for this:
-  //    radius / cos(lat)
+  // Ensure ilat_min <= ilat_max (binary search may return them swapped)
+  if (ilat_min > ilat_max)
+    std::swap(ilat_min, ilat_max);
+
+  // Longitude bounds with proper spherical geometry consideration
+  // At high latitudes, equal angular distance spans more longitude degrees
+  // because meridians converge toward the poles.
+  //
+  // The longitude span for a given angular radius at latitude φ is:
+  //   Δλ = arcsin(sin(r) / cos(φ))  for Haversine
+  // We use a conservative approximation: radius / cos(lat)
+  // with safeguards near poles
+
   double lat_rad = std::abs(query_lat) * DEG_TO_RAD;
-  double lon_radius = (std::abs(query_lat) < 90.0)
-                          ? radius / std::max(0.01, std::cos(lat_rad))
-                          : 180.0;
+  double cos_lat = std::cos(lat_rad);
+
+  // Near poles (within ~0.5 degrees), search all longitudes
+  // This threshold corresponds to cos(89.5°) ≈ 0.0087
+  const double NEAR_POLE_COS_THRESHOLD = 0.01;
+
+  double lon_radius;
+  if (cos_lat < NEAR_POLE_COS_THRESHOLD) {
+    // Very close to pole - search all longitudes
+    wraps_around = true;
+    ilon_min = 0;
+    ilon_max = m_nlon - 1;
+    return;
+  } else {
+    // Standard case: expand longitude search based on latitude
+    lon_radius = expanded_radius / cos_lat;
+  }
 
   double lon_search_min = query_lon - lon_radius;
   double lon_search_max = query_lon + lon_radius;
 
-  // Check for wraparound across the dateline (preserve periodicity)
-  if (lon_search_min < m_lon_min || lon_search_max > m_lon_max) {
+  // Check if longitude range exceeds 180 degrees (would wrap more than halfway)
+  // or crosses the grid boundaries
+  bool exceeds_half_globe = (lon_search_max - lon_search_min) >= 180.0;
+  bool crosses_lon_boundary = (lon_search_min < m_lon_min) ||
+                               (lon_search_max > m_lon_max);
+
+  if (exceeds_half_globe || crosses_lon_boundary) {
     wraps_around = true;
-    // For wraparound case, we'll search entire longitude range
     ilon_min = 0;
     ilon_max = m_nlon - 1;
   } else {
     ilon_min = find_nearest_index(m_lons, lon_search_min);
     ilon_max = find_nearest_index(m_lons, lon_search_max);
+    // Ensure ilon_min <= ilon_max
+    if (ilon_min > ilon_max)
+      std::swap(ilon_min, ilon_max);
   }
 }
 
@@ -203,9 +288,15 @@ size_t RegularGridLocator::radiusSearch(
   CoordinateType query_lon = query_point[0];
   CoordinateType query_lat = query_point[1];
 
-  // Special case: if query is at pole, all longitude values at pole are
-  // equidistant
-  if (is_at_pole(query_lat)) {
+  // Normalize query longitude to grid range
+  query_lon = normalize_longitude_to_grid(query_lon);
+
+  // Check if grid actually has poles
+  const bool grid_has_north_pole = is_at_pole(m_lat_max);
+  const bool grid_has_south_pole = is_at_pole(m_lat_min);
+
+  // Special case: if query is at pole and grid has that pole
+  if (is_at_pole(query_lat) && (grid_has_north_pole || grid_has_south_pole)) {
     // Find the latitude index closest to the pole
     size_t pole_ilat = (query_lat > 0) ? m_nlat - 1 : 0;
     CoordinateType pole_lat = m_lats[pole_ilat];
@@ -219,6 +310,40 @@ size_t RegularGridLocator::radiusSearch(
         matches.push_back({idx, pole_dist * pole_dist});
       }
     }
+
+    // Also search adjacent latitudes if radius extends beyond the pole point
+    if (radius > pole_dist) {
+      double remaining_radius = radius - pole_dist;
+      // Search all latitudes within remaining_radius of the pole
+      for (size_t ilat = 0; ilat < m_nlat; ++ilat) {
+        if (ilat == pole_ilat)
+          continue; // Already added
+
+        CoordinateType grid_lat = m_lats[ilat];
+        CoordinateType lat_dist_from_pole = std::abs(grid_lat - pole_lat);
+
+        // For points near pole, search all longitudes
+        if (lat_dist_from_pole <= remaining_radius) {
+          for (size_t ilon = 0; ilon < m_nlon; ++ilon) {
+            CoordinateType grid_lon = m_lons[ilon];
+            CoordinateType dist = compute_distance(query_lon, query_lat,
+                                                   grid_lon, grid_lat, m_metric);
+
+            if (dist <= radius) {
+              size_t idx = get_linear_index(ilat, ilon);
+              matches.push_back({idx, dist * dist});
+            }
+          }
+        }
+      }
+    }
+
+    // Sort results by distance (ascending order)
+    if (sorted) {
+      std::sort(matches.begin(), matches.end(),
+                [](const auto &a, const auto &b) { return a.second < b.second; });
+    }
+
     return matches.size();
   }
 
@@ -244,8 +369,7 @@ size_t RegularGridLocator::radiusSearch(
           size_t idx = get_linear_index(ilat, ilon);
           matches.push_back({idx, dist * dist});
 
-          // If this latitude is at pole, we only need one longitude
-          // value
+          // If this latitude is at pole, we only need one longitude value
           if (lat_at_pole)
             break;
         }
@@ -261,8 +385,7 @@ size_t RegularGridLocator::radiusSearch(
           size_t idx = get_linear_index(ilat, ilon);
           matches.push_back({idx, dist * dist});
 
-          // If this latitude is at pole, we only need one longitude
-          // value
+          // If this latitude is at pole, we only need one longitude value
           if (lat_at_pole)
             break;
         }
@@ -307,15 +430,19 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
   CoordinateType query_lat = query_point[1];
 
   // Normalize query longitude to grid range
-  query_lon = normalize_longitude(query_lon);
+  query_lon = normalize_longitude_to_grid(query_lon);
 
   // Use a max-heap to keep track of k nearest neighbors
   // Pair: (distance_sq, linear_index)
   using HeapElement = std::pair<double, size_t>;
   std::priority_queue<HeapElement> max_heap;
 
+  // Check if grid actually has poles
+  const bool grid_has_north_pole = is_at_pole(m_lat_max);
+  const bool grid_has_south_pole = is_at_pole(m_lat_min);
+
   // Special case: query at pole
-  if (is_at_pole(query_lat)) {
+  if (is_at_pole(query_lat) && (grid_has_north_pole || grid_has_south_pole)) {
     size_t pole_ilat = (query_lat > 0) ? m_nlat - 1 : 0;
     CoordinateType pole_lat = m_lats[pole_ilat];
     CoordinateType pole_dist = std::abs(query_lat - pole_lat);
@@ -326,14 +453,28 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
     max_heap.push({pole_dist_sq, idx});
 
     // If we need more neighbors, expand search to adjacent latitudes
-    if (k > 1 && pole_ilat > 0) {
-      for (size_t ilat = pole_ilat - 1; max_heap.size() < k && ilat < m_nlat;
-           --ilat) {
-        for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
-          CoordinateType dist = compute_distance(
-              query_lon, query_lat, m_lons[ilon], m_lats[ilat], m_metric);
-          size_t index = get_linear_index(ilat, ilon);
-          max_heap.push({dist * dist, index});
+    if (k > 1) {
+      // Use int for safe decrementing/incrementing
+      if (pole_ilat == 0) {
+        // South pole - search upward
+        for (size_t ilat = 1; max_heap.size() < k && ilat < m_nlat; ++ilat) {
+          for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
+            CoordinateType dist = compute_distance(
+                query_lon, query_lat, m_lons[ilon], m_lats[ilat], m_metric);
+            size_t index = get_linear_index(ilat, ilon);
+            max_heap.push({dist * dist, index});
+          }
+        }
+      } else {
+        // North pole - search downward (use int to avoid underflow)
+        for (int ilat = static_cast<int>(pole_ilat) - 1;
+             max_heap.size() < k && ilat >= 0; --ilat) {
+          for (size_t ilon = 0; ilon < m_nlon && max_heap.size() < k; ++ilon) {
+            CoordinateType dist = compute_distance(
+                query_lon, query_lat, m_lons[ilon], m_lats[ilat], m_metric);
+            size_t index = get_linear_index(static_cast<size_t>(ilat), ilon);
+            max_heap.push({dist * dist, index});
+          }
         }
       }
     }
@@ -343,19 +484,19 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
     size_t ilon_start = find_nearest_index(m_lons, query_lon);
 
     // Spiral search outward from starting position
-    size_t radius = 0;
+    size_t search_radius = 0;
     const size_t max_radius = std::max(m_nlat, m_nlon);
 
-    while (max_heap.size() < k && radius < max_radius) {
+    while (max_heap.size() < k && search_radius < max_radius) {
       // Search ring at current radius
-      for (int dlat = -static_cast<int>(radius);
-           dlat <= static_cast<int>(radius); ++dlat) {
-        for (int dlon = -static_cast<int>(radius);
-             dlon <= static_cast<int>(radius); ++dlon) {
-          // Only process perimeter of ring (skip interior for
-          // efficiency)
-          if (radius > 0 && std::abs(dlat) < static_cast<int>(radius) &&
-              std::abs(dlon) < static_cast<int>(radius)) {
+      for (int dlat = -static_cast<int>(search_radius);
+           dlat <= static_cast<int>(search_radius); ++dlat) {
+        for (int dlon = -static_cast<int>(search_radius);
+             dlon <= static_cast<int>(search_radius); ++dlon) {
+          // Only process perimeter of ring (skip interior for efficiency)
+          if (search_radius > 0 &&
+              std::abs(dlat) < static_cast<int>(search_radius) &&
+              std::abs(dlon) < static_cast<int>(search_radius)) {
             continue;
           }
 
@@ -389,7 +530,7 @@ void RegularGridLocator::knnSearch(const PointType3D &query_point, size_t k,
           }
         }
       }
-      radius++;
+      search_radius++;
     }
   }
 

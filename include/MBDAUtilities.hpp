@@ -193,7 +193,14 @@ inline double haversine_distance(double lon1, double lat1, double lon2,
   // Convert to radians
   double lat1_rad = lat1 * DEG_TO_RAD;
   double lat2_rad = lat2 * DEG_TO_RAD;
-  double dlon = (lon2 - lon1) * DEG_TO_RAD;
+  // Normalize dlon to [-180, 180] to always take the shorter arc
+  double dlon_deg = lon2 - lon1;
+  dlon_deg = std::fmod(dlon_deg, 360.0);
+  if (dlon_deg > 180.0)
+    dlon_deg -= 360.0;
+  if (dlon_deg < -180.0)
+    dlon_deg += 360.0;
+  double dlon = dlon_deg * DEG_TO_RAD;
   double dlat = (lat2 - lat1) * DEG_TO_RAD;
 
   // Haversine formula: a = sin²(Δφ/2) + cos φ1 ⋅ cos φ2 ⋅ sin²(Δλ/2)
