@@ -527,19 +527,63 @@ ErrorCode ParallelPointCloudReader::read_coordinates_chunk(
         // of points
 
         LOG(INFO) << "Reading unstructured point cloud coordinates";
+        // Check if chunked reading is needed for large datasets
+        bool use_chunked_reading = count > MAX_ELEMENTS_PER_CHUNK;
 
-        // Set up parallel I/O parameters for 1D arrays
-        start = {static_cast<MPI_Offset>(start_idx)};
-        read_count = {static_cast<MPI_Offset>(count)};
+        if (use_chunked_reading) {
+          LOG(INFO) << "Using chunked reading for " << count
+                    << " coordinates (exceeds " << MAX_ELEMENTS_PER_CHUNK
+                    << " limit)";
 
-        std::vector<CoordinateType> x_coords(count), y_coords(count);
-        x_var.getVar_all(start, read_count, x_coords.data());
-        y_var.getVar_all(start, read_count, y_coords.data());
+          // Calculate chunk size
+          size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+          size_t num_chunks = (count + chunk_size - 1) / chunk_size;
 
-        coords.resize(count);
-        for (size_t i = 0; i < count; ++i) {
-          coords[i] = {x_coords[i], y_coords[i]};
+          LOG(INFO) << "Reading coordinates in " << num_chunks << " chunks of up to "
+                    << chunk_size << " elements each";
+
+          coords.resize(count);
+
+          // Read data chunk by chunk
+          for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+            size_t current_start = start_idx + chunk_idx * chunk_size;
+            size_t current_count = std::min(chunk_size, count - chunk_idx * chunk_size);
+
+            LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/" << num_chunks
+                      << " (coordinates " << (chunk_idx * chunk_size) << " to "
+                      << (chunk_idx * chunk_size + current_count - 1) << ")";
+
+            // Set up NetCDF hyperslab parameters
+            std::vector<MPI_Offset> chunk_start = {static_cast<MPI_Offset>(current_start)};
+            std::vector<MPI_Offset> chunk_count = {static_cast<MPI_Offset>(current_count)};
+
+            std::vector<CoordinateType> x_chunk(current_count), y_chunk(current_count);
+            x_var.getVar_all(chunk_start, chunk_count, x_chunk.data());
+            y_var.getVar_all(chunk_start, chunk_count, y_chunk.data());
+
+            // Copy to result
+            for (size_t i = 0; i < current_count; ++i) {
+              coords[chunk_idx * chunk_size + i] = {x_chunk[i], y_chunk[i]};
+            }
+          }
+        } else {
+          // Read all data at once for smaller datasets
+          LOG(INFO) << "Reading all " << count << " coordinates at once";
+
+          // Set up parallel I/O parameters for 1D arrays
+          start = {static_cast<MPI_Offset>(start_idx)};
+          read_count = {static_cast<MPI_Offset>(count)};
+
+          std::vector<CoordinateType> x_coords(count), y_coords(count);
+          x_var.getVar_all(start, read_count, x_coords.data());
+          y_var.getVar_all(start, read_count, y_coords.data());
+
+          coords.resize(count);
+          for (size_t i = 0; i < count; ++i) {
+            coords[i] = {x_coords[i], y_coords[i]};
+          }
         }
+        
         return MB_SUCCESS;
       }
     } else if (x_ndims == 2 && y_ndims == 2) {
@@ -629,13 +673,52 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(
 
     if (ndims == 1) {
       // 1D variable - standard case
-      start = {static_cast<MPI_Offset>(start_idx)};
-      read_count = {static_cast<MPI_Offset>(count)};
+      // Check if chunked reading is needed for large datasets
+      bool use_chunked_reading = count > MAX_ELEMENTS_PER_CHUNK;
 
-      data.resize(count);
+      if (use_chunked_reading) {
+        LOG(INFO) << "Using chunked reading for variable '" << var_name
+                  << "' with " << count << " elements (exceeds "
+                  << MAX_ELEMENTS_PER_CHUNK << " limit)";
 
-      // Read data using parallel NetCDF
-      var.getVar_all(start, read_count, data.data());
+        // Calculate chunk size
+        size_t chunk_size = MAX_ELEMENTS_PER_CHUNK;
+        size_t num_chunks = (count + chunk_size - 1) / chunk_size;
+
+        LOG(INFO) << "Reading '" << var_name << "' in " << num_chunks
+                  << " chunks of up to " << chunk_size << " elements each";
+
+        data.resize(count);
+
+        // Read data chunk by chunk
+        for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+          size_t current_start = start_idx + chunk_idx * chunk_size;
+          size_t current_count = std::min(chunk_size, count - chunk_idx * chunk_size);
+
+          LOG(INFO) << "Reading chunk " << (chunk_idx + 1) << "/" << num_chunks
+                    << " (elements " << (chunk_idx * chunk_size) << " to "
+                    << (chunk_idx * chunk_size + current_count - 1) << ")";
+
+          // Set up NetCDF hyperslab parameters
+          std::vector<MPI_Offset> chunk_start = {static_cast<MPI_Offset>(current_start)};
+          std::vector<MPI_Offset> chunk_count = {static_cast<MPI_Offset>(current_count)};
+
+          // Read chunk directly into the data buffer at the correct offset
+          var.getVar_all(chunk_start, chunk_count, data.data() + chunk_idx * chunk_size);
+        }
+      } else {
+        // Read all data at once for smaller datasets
+        LOG(INFO) << "Reading all " << count << " elements of variable '"
+                  << var_name << "' at once";
+
+        start = {static_cast<MPI_Offset>(start_idx)};
+        read_count = {static_cast<MPI_Offset>(count)};
+
+        data.resize(count);
+
+        // Read data using parallel NetCDF
+        var.getVar_all(start, read_count, data.data());
+      }
     } else if (ndims == 2) {
       // 2D variable - handle USGS format with spatial chunking
       std::vector<PnetCDF::NcmpiDim> dims = var.getDims();
