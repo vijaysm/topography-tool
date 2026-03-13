@@ -111,10 +111,7 @@ ErrorCode ScalarRemapper::remap_scalars(
 
   // Initialize output scalar fields for all configured variables
   for (const auto &var_name : m_config.scalar_var_names) {
-    if (m_config.is_usgs_format)
-      m_mesh_data.i_scalar_fields[var_name].resize(target_size, 0);
-    else
-      m_mesh_data.d_scalar_fields[var_name].resize(target_size, 0.0);
+    m_mesh_data.scalar_fields[var_name].resize(target_size, 0.0);
   }
 
   // Perform the actual remapping using the appropriate algorithm
@@ -266,12 +263,10 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
     // Process each scalar variable with simple averaging
     for (const auto &var_name : m_config.scalar_var_names) {
       double weighted_sum = 0.0;
-      bool is_double = false;
 
       // Handle double precision variables
-      auto var_it = point_data.d_scalar_variables.find(var_name);
-      if (!m_config.is_usgs_format &&
-          var_it != point_data.d_scalar_variables.end()) {
+      auto var_it = point_data.scalar_variables.find(var_name);
+      if (var_it != point_data.scalar_variables.end()) {
         const auto &values = var_it->second;
 
         // Simple average: sum all neighbor values
@@ -281,30 +276,16 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
             weighted_sum += values[pt_idx];
           }
         }
-        is_double = true;
-      } else {
-        // Handle integer variables
-        auto ivar_it = point_data.i_scalar_variables.find(var_name);
-        if (ivar_it != point_data.i_scalar_variables.end()) {
-          const auto &values = ivar_it->second;
-
-          // Simple average: sum all neighbor values
-          for (size_t k = 0; k < nearest_points.size(); ++k) {
-            size_t pt_idx = nearest_points[k].first;
-            if (pt_idx < values.size()) {
-              weighted_sum += static_cast<double>(values[pt_idx]);
-            }
-          }
-        }
+      }
+      else {
+        LOG(ERROR) << "Variable " << var_name << " not found in point data";
+        element_errors[elem_idx] = MB_FAILURE;
+        continue;
       }
 
       // Store averaged value (simple mean, not weighted)
-      if (is_double)
-        m_mesh_data.d_scalar_fields[var_name][elem_idx] =
-            weighted_sum / nearest_points.size();
-      else
-        m_mesh_data.i_scalar_fields[var_name][elem_idx] =
-            static_cast<int>(weighted_sum / nearest_points.size());
+      m_mesh_data.scalar_fields[var_name][elem_idx] =
+          weighted_sum / nearest_points.size();
     }
 
   } // End of parallel region
@@ -327,12 +308,12 @@ moab::ErrorCode ScalarRemapper::smoothen_field_constant_area_averaging(
   for (const auto &var_name : m_config.scalar_var_names) {
     std::array<double, 5> values;
     for (size_t i = 0; i < std::min(size_t(5), point_data.size()); ++i) {
-      auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
-      auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
-      if (d_it != m_mesh_data.d_scalar_fields.end()) {
+      auto d_it = m_mesh_data.scalar_fields.find(var_name);
+      if (d_it != m_mesh_data.scalar_fields.end()) {
         values[i] = d_it->second[i];
-      } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
-        values[i] = i_it->second[i];
+      }
+      else {
+        LOG(ERROR) << "Variable " << var_name << " not found in mesh data";
       }
     }
     VLOG(2) << "Sample values for " << var_name << ": " << values;
@@ -438,21 +419,9 @@ ErrorCode ScalarRemapper::compute_element_centroid(EntityHandle element,
  */
 ErrorCode ScalarRemapper::validate_remapping_results() {
   // Check double precision scalar fields
-  for (const auto &field_pair : m_mesh_data.d_scalar_fields) {
+  for (const auto &field_pair : m_mesh_data.scalar_fields) {
     const auto &field_data = field_pair.second;
     for (double value : field_data) {
-      if (std::isnan(value) || std::isinf(value)) {
-        std::cerr << "Invalid value detected in remapped field "
-                  << field_pair.first;
-        return MB_FAILURE;
-      }
-    }
-  }
-
-  // Check integer scalar fields
-  for (const auto &field_pair : m_mesh_data.i_scalar_fields) {
-    const auto &field_data = field_pair.second;
-    for (int value : field_data) {
       if (std::isnan(value) || std::isinf(value)) {
         std::cerr << "Invalid value detected in remapped field "
                   << field_pair.first;
@@ -474,7 +443,7 @@ void ScalarRemapper::print_remapping_statistics() {
   LOG(INFO) << "\n=== Remapping Statistics ===";
 
   // Statistics for double precision fields
-  for (const auto &field_pair : m_mesh_data.d_scalar_fields) {
+  for (const auto &field_pair : m_mesh_data.scalar_fields) {
     const std::string &var_name = field_pair.first;
     const auto &field_data = field_pair.second;
 
@@ -484,24 +453,6 @@ void ScalarRemapper::print_remapping_statistics() {
     double min_val = *std::min_element(field_data.begin(), field_data.end());
     double max_val = *std::max_element(field_data.begin(), field_data.end());
     double sum = std::accumulate(field_data.begin(), field_data.end(), 0.0);
-    double avg = sum / field_data.size();
-
-    LOG(INFO) << var_name << " - Min: " << min_val << ", Max: " << max_val
-              << ", Avg: " << avg << " (on " << field_data.size()
-              << " elements)";
-  }
-
-  // Statistics for integer fields
-  for (const auto &field_pair : m_mesh_data.i_scalar_fields) {
-    const std::string &var_name = field_pair.first;
-    const auto &field_data = field_pair.second;
-
-    if (field_data.empty())
-      continue;
-
-    double min_val = *std::min_element(field_data.begin(), field_data.end());
-    double max_val = *std::max_element(field_data.begin(), field_data.end());
-    double sum = std::accumulate(field_data.begin(), field_data.end(), 0);
     double avg = sum / field_data.size();
 
     LOG(INFO) << var_name << " - Min: " << min_val << ", Max: " << max_val
@@ -563,26 +514,13 @@ static ErrorCode write_to_tag(moab::Interface *interface,
  */
 ErrorCode ScalarRemapper::write_to_tags(const std::string &tag_prefix) {
   // Write double precision scalar fields
-  for (const auto &field_pair : m_mesh_data.d_scalar_fields) {
+  for (const auto &field_pair : m_mesh_data.scalar_fields) {
     const std::string &var_name = field_pair.first;
     const auto &field_data = field_pair.second;
 
     std::string tag_name = tag_prefix + var_name;
     MB_CHK_ERR(write_to_tag<double>(m_interface, tag_name, m_mesh_data.elements,
                                     field_data));
-
-    LOG(INFO) << "Created tag '" << tag_name << "' with " << field_data.size()
-              << " values";
-  }
-
-  // Write integer scalar fields
-  for (const auto &field_pair : m_mesh_data.i_scalar_fields) {
-    const std::string &var_name = field_pair.first;
-    const auto &field_data = field_pair.second;
-
-    std::string tag_name = tag_prefix + var_name;
-    MB_CHK_ERR(write_to_tag<int>(m_interface, tag_name, m_mesh_data.elements,
-                                 field_data));
 
     LOG(INFO) << "Created tag '" << tag_name << "' with " << field_data.size()
               << " values";
@@ -825,10 +763,10 @@ ErrorCode NearestNeighborRemapper::perform_remapping(
       // Copy scalar values from nearest point to mesh element
       for (const auto &var_name : m_config.scalar_var_names) {
         // Handle double precision variables
-        auto var_it = point_data.d_scalar_variables.find(var_name);
-        if (var_it != point_data.d_scalar_variables.end() &&
-            nearest_point_idx < var_it->second.size()) {
-          m_mesh_data.d_scalar_fields[var_name][elem_idx] =
+        auto var_it = point_data.scalar_variables.find(var_name);
+        if (var_it != point_data.scalar_variables.end()) {
+          assert(nearest_point_idx < var_it->second.size());
+          m_mesh_data.scalar_fields[var_name][elem_idx] =
               var_it->second[nearest_point_idx];
           if (elem_idx < 10) {
             LOG(INFO) << "Double Data (" << var_name
@@ -836,19 +774,7 @@ ErrorCode NearestNeighborRemapper::perform_remapping(
                       << " is " << var_it->second[nearest_point_idx];
           }
         } else {
-          // Handle integer variables
-          auto ivar_it = point_data.i_scalar_variables.find(var_name);
-          if (ivar_it != point_data.i_scalar_variables.end() &&
-              nearest_point_idx < ivar_it->second.size()) {
-            m_mesh_data.i_scalar_fields[var_name][elem_idx] =
-                ivar_it->second[nearest_point_idx];
-            if (elem_idx < 10) {
-              LOG(INFO) << "Integer Data (" << var_name
-                        << ") at nearest neighbor element: "
-                        << nearest_point_idx << " is "
-                        << ivar_it->second[nearest_point_idx];
-            }
-          }
+          LOG(ERROR) << "Variable " << var_name << " not found in point data";
         }
       }
     } else {
@@ -1464,7 +1390,6 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
 
     // Initialize element-averaged values (thread-local)
     std::unordered_map<std::string, double> element_averages_d;
-    // std::unordered_map<std::string, int> element_averages_i;
     std::unordered_map<std::string, double>
         total_weights; // Per-variable weight tracking
 
@@ -1564,9 +1489,8 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
           // gll_weight_intensive;
 
           // Check if it's a double variable
-          auto var_it = point_data.d_scalar_variables.find(var_name);
-          if (!m_config.is_usgs_format &&
-              var_it != point_data.d_scalar_variables.end()) {
+          auto var_it = point_data.scalar_variables.find(var_name);
+          if (var_it != point_data.scalar_variables.end()) {
             const auto &values = var_it->second;
 
             // Vectorized weighted sum computation
@@ -1577,22 +1501,9 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
                 weight_sum += inv_weights[k];
               }
             }
-          } else {
-            // Check if it's an integer variable
-            auto ivar_it = point_data.i_scalar_variables.find(var_name);
-            if (ivar_it != point_data.i_scalar_variables.end()) {
-              const auto &values = ivar_it->second;
-
-              // Vectorized weighted sum computation for integers
-              for (size_t k = 0; k < nearest_points.size(); ++k) {
-                size_t pt_idx = nearest_points[k].first;
-                if (pt_idx < values.size()) {
-                  weighted_sum +=
-                      inv_weights[k] * static_cast<double>(values[pt_idx]);
-                  weight_sum += inv_weights[k];
-                }
-              }
-            }
+          }
+          else {
+            LOG(ERROR) << "Variable " << var_name << " not found in point data";
           }
 
           // Add GLL-weighted contribution to element average
@@ -1615,16 +1526,10 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
           fabs(wt_it->second) > 0.0) {
         const double inv_total_weight = 1.0 / wt_it->second;
 
-        auto var_it = point_data.d_scalar_variables.find(var_name);
-        if (var_it != point_data.d_scalar_variables.end()) {
-          m_mesh_data.d_scalar_fields[var_name][elem_idx] =
+        auto var_it = point_data.scalar_variables.find(var_name);
+        if (var_it != point_data.scalar_variables.end()) {
+          m_mesh_data.scalar_fields[var_name][elem_idx] =
               it->second * inv_total_weight;
-        } else {
-          auto ivar_it = point_data.i_scalar_variables.find(var_name);
-          if (ivar_it != point_data.i_scalar_variables.end()) {
-            m_mesh_data.i_scalar_fields[var_name][elem_idx] =
-                static_cast<int>(it->second * inv_total_weight);
-          }
         }
       }
     }
@@ -1655,12 +1560,9 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_to_spectral_elements(
     std::array<double, 5> values;
     for (size_t i = 0; i < std::min(size_t(5), m_mesh_data.elements.size());
          ++i) {
-      auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
-      auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
-      if (d_it != m_mesh_data.d_scalar_fields.end()) {
+      auto d_it = m_mesh_data.scalar_fields.find(var_name);
+      if (d_it != m_mesh_data.scalar_fields.end()) {
         values[i] = d_it->second[i];
-      } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
-        values[i] = i_it->second[i];
       }
     }
     VLOG(2) << "Sample values for " << var_name << ": " << values;
@@ -1775,9 +1677,8 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
       double weight_sum = 0.0;
 
       // Check if it's a double variable
-      auto var_it = point_data.d_scalar_variables.find(var_name);
-      if (!m_config.is_usgs_format &&
-          var_it != point_data.d_scalar_variables.end()) {
+      auto var_it = point_data.scalar_variables.find(var_name);
+      if (var_it != point_data.scalar_variables.end()) {
         const auto &values = var_it->second;
 
         // Vectorized weighted sum computation
@@ -1789,21 +1690,7 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
           }
         }
       } else {
-        // Check if it's an integer variable
-        auto ivar_it = point_data.i_scalar_variables.find(var_name);
-        if (ivar_it != point_data.i_scalar_variables.end()) {
-          const auto &values = ivar_it->second;
-
-          // Vectorized weighted sum computation for integers
-          for (size_t k = 0; k < nearest_points.size(); ++k) {
-            size_t pt_idx = nearest_points[k].first;
-            if (pt_idx < values.size()) {
-              weighted_sum +=
-                  inv_weights[k] * static_cast<double>(values[pt_idx]);
-              weight_sum += inv_weights[k];
-            }
-          }
-        }
+        LOG(ERROR) << "Variable " << var_name << " not found in point data";
       }
 
       // Add GLL-weighted contribution to element average
@@ -1818,15 +1705,11 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
       auto it = element_averages_d.find(var_name);
 
       if (it != element_averages_d.end()) {
-        auto var_it = point_data.d_scalar_variables.find(var_name);
-        if (var_it != point_data.d_scalar_variables.end()) {
-          m_mesh_data.d_scalar_fields[var_name][elem_idx] = it->second;
+        auto var_it = point_data.scalar_variables.find(var_name);
+        if (var_it != point_data.scalar_variables.end()) {
+          m_mesh_data.scalar_fields[var_name][elem_idx] = it->second;
         } else {
-          auto ivar_it = point_data.i_scalar_variables.find(var_name);
-          if (ivar_it != point_data.i_scalar_variables.end()) {
-            m_mesh_data.i_scalar_fields[var_name][elem_idx] =
-                static_cast<int>(it->second);
-          }
+          LOG(ERROR) << "Variable " << var_name << " not found in point data";
         }
       }
     }
@@ -1852,12 +1735,11 @@ PCDiskAveragedProjectionRemapper::project_point_cloud_with_area_averaging(
     std::array<double, 5> values;
     for (size_t i = 0; i < std::min(size_t(5), m_mesh_data.elements.size());
          ++i) {
-      auto d_it = m_mesh_data.d_scalar_fields.find(var_name);
-      auto i_it = m_mesh_data.i_scalar_fields.find(var_name);
-      if (d_it != m_mesh_data.d_scalar_fields.end()) {
+      auto d_it = m_mesh_data.scalar_fields.find(var_name);
+      if (d_it != m_mesh_data.scalar_fields.end()) {
         values[i] = d_it->second[i];
-      } else if (i_it != m_mesh_data.i_scalar_fields.end()) {
-        values[i] = i_it->second[i];
+      } else {
+        values[i] = 0.0;
       }
     }
     VLOG(2) << "Sample values for " << var_name << ": " << values;

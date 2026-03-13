@@ -34,30 +34,6 @@
 namespace moab {
 
 //===========================================================================
-// Utility Functions
-//===========================================================================
-
-namespace {
-/**
- * @brief Convert source vector to double vector
- *
- * Utility function to convert any numeric type vector to double precision.
- * Used for type conversion when reading scalar variables from NetCDF.
- *
- * @tparam SrcVec Source vector type
- * @param input Input vector
- * @param output Output double vector
- */
-template <typename SrcVec>
-void copy_to_double_vector(const SrcVec &input, std::vector<double> &output) {
-  output.resize(input.size());
-  for (size_t i = 0; i < input.size(); ++i) {
-    output[i] = static_cast<double>(input[i]);
-  }
-}
-} // namespace
-
-//===========================================================================
 // Constructor and Destructor
 //===========================================================================
 
@@ -664,8 +640,8 @@ ErrorCode ParallelPointCloudReader::read_scalar_variable_chunk(
         // subset?
 
         size_t total_elements_to_read = nlats_count * nlons_count;
-        const size_t MAX_ELEMENTS_PER_CHUNK =
-            500 * 1000 * 1000; // 100M elements, well below INT_MAX
+        // const size_t MAX_ELEMENTS_PER_CHUNK =
+        //     500 * 1000 * 1000; // 100M elements, well below INT_MAX
 
         std::vector<T> temp_buffer;
         temp_buffer.reserve(total_elements_to_read);
@@ -820,47 +796,24 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
 
     // Read scalar variables with buffered reading for large datasets
     for (const auto &var_name : m_config.scalar_var_names) {
+      std::vector<double> scalar_data;
+      MB_CHK_ERR(read_scalar_variable_chunk(var_name, start_idx, count,
+                                            scalar_data));
 
-      if (m_is_usgs_format) {
-        std::vector<int> scalar_data;
-        MB_CHK_ERR(read_scalar_variable_chunk(var_name, start_idx, count,
-                                              scalar_data));
+      // The scalar data is read in the same order as coordinates, so
+      // no filtering needed
+      if (scalar_data.size() == 0)
+        continue; // nothing to do.
 
-        // The scalar data is read in the same order as coordinates, so
-        // no filtering needed
-        if (scalar_data.size() == 0)
-          continue; // nothing to do.
+      chunk_data.scalar_variables[var_name] = std::move(scalar_data);
 
-        chunk_data.i_scalar_variables[var_name] = std::move(scalar_data);
-
-        if (chunk_data.i_scalar_variables[var_name].size() !=
-            chunk_data.size()) {
-          LOG(ERROR) << "WARNING: Scalar variable '" << var_name
-                     << "' has a different size ("
-                     << chunk_data.i_scalar_variables[var_name].size()
-                     << ") than the total points (" << chunk_data.size()
-                     << "). Data may be misaligned.";
-        }
-      } else {
-        std::vector<double> scalar_data;
-        MB_CHK_ERR(read_scalar_variable_chunk(var_name, start_idx, count,
-                                              scalar_data));
-
-        // The scalar data is read in the same order as coordinates, so
-        // no filtering needed
-        if (scalar_data.size() == 0)
-          continue; // nothing to do.
-
-        chunk_data.d_scalar_variables[var_name] = std::move(scalar_data);
-
-        if (chunk_data.d_scalar_variables[var_name].size() !=
-            chunk_data.size()) {
-          LOG(ERROR) << "WARNING: Scalar variable '" << var_name
-                     << "' has a different size ("
-                     << chunk_data.d_scalar_variables[var_name].size()
-                     << ") than the total points (" << chunk_data.size()
-                     << "). Data may be misaligned.";
-        }
+      if (chunk_data.scalar_variables[var_name].size() !=
+          chunk_data.size()) {
+        LOG(ERROR) << "WARNING: Scalar variable '" << var_name
+                    << "' has a different size ("
+                    << chunk_data.scalar_variables[var_name].size()
+                    << ") than the total points (" << chunk_data.size()
+                    << "). Data may be misaligned.";
       }
     }
 
@@ -868,8 +821,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
     if (!m_config.square_field_names.empty()) {
       for (const auto &field_name : m_config.square_field_names) {
         // Check if field exists in double variables
-        if (chunk_data.d_scalar_variables.count(field_name)) {
-          const auto &field_data = chunk_data.d_scalar_variables[field_name];
+        if (chunk_data.scalar_variables.count(field_name)) {
+          const auto &field_data = chunk_data.scalar_variables[field_name];
           std::vector<double> squared_data(field_data.size());
 
           for (size_t i = 0; i < field_data.size(); ++i) {
@@ -877,20 +830,7 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
           }
 
           std::string squared_name = field_name + "_squared";
-          chunk_data.d_scalar_variables[squared_name] = std::move(squared_data);
-          LOG(INFO) << "Computed squared field: " << squared_name;
-        }
-        // Check if field exists in integer variables
-        else if (chunk_data.i_scalar_variables.count(field_name)) {
-          const auto &field_data = chunk_data.i_scalar_variables[field_name];
-          std::vector<int> squared_data(field_data.size());
-
-          for (size_t i = 0; i < field_data.size(); ++i) {
-            squared_data[i] = field_data[i] * field_data[i];
-          }
-
-          std::string squared_name = field_name + "_squared";
-          chunk_data.i_scalar_variables[squared_name] = std::move(squared_data);
+          chunk_data.scalar_variables[squared_name] = std::move(squared_data);
           LOG(INFO) << "Computed squared field: " << squared_name;
         } else {
           LOG(ERROR) << "Warning: Field '" << field_name
@@ -900,12 +840,8 @@ moab::ErrorCode moab::ParallelPointCloudReader::read_local_chunk_distributed(
     }
 
     LOG(INFO) << "Read " << chunk_data.size() << " points with "
-              << chunk_data.d_scalar_variables.size()
-              << " double scalar variables";
-    if (!chunk_data.i_scalar_variables.empty()) {
-      LOG(INFO) << " and " << chunk_data.i_scalar_variables.size()
-                << " integer scalar variables";
-    }
+              << chunk_data.scalar_variables.size()
+              << " scalar variables";
     if (!chunk_data.areas.empty()) {
       LOG(INFO) << " and area data";
     }

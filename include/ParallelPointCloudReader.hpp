@@ -188,10 +188,7 @@ public:
     //===================================================================
 
     /// Double precision scalar variables (e.g., temperature, elevation)
-    std::unordered_map<std::string, std::vector<double>> d_scalar_variables;
-
-    /// Integer scalar variables (e.g., masks, classifications)
-    std::unordered_map<std::string, std::vector<int>> i_scalar_variables;
+    std::unordered_map<std::string, std::vector<double>> scalar_variables;
 
     /// Area data for each point (used for weighted operations)
     std::vector<double> areas;
@@ -322,8 +319,7 @@ public:
       lonlat_coordinates.clear();
       longitudes.clear();
       latitudes.clear();
-      d_scalar_variables.clear();
-      i_scalar_variables.clear();
+      scalar_variables.clear();
       areas.clear();
       is_structured_grid = false;
     }

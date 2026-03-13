@@ -143,9 +143,7 @@ public:
 
   public:
     std::unordered_map<std::string, std::vector<double>>
-        d_scalar_fields; // Remapped data
-    std::unordered_map<std::string, std::vector<int>>
-        i_scalar_fields; // Remapped data
+        scalar_fields; // Remapped data
   };
 
   // Spectral element projection parameters: immutable for now
