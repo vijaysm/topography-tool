@@ -703,7 +703,10 @@ ErrorCode NetcdfMeshIO::write_point_scalars_to_file(
     dims.push_back(dim);
 
     auto define_variable = [&](const std::string &var_name) {
-      if (out.getVars().find(var_name) != out.getVars().end()) {
+      auto vars = out.getVars();
+      if (vars.find(var_name) != vars.end()) {
+        // if it already exists, remove it (probably part of original file)
+        // out.removeVar(var_name);
         return;
       }
       if constexpr (std::is_same_v<TagValueType, float>) {

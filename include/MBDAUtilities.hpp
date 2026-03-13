@@ -18,7 +18,7 @@ static constexpr double RAD_TO_DEG = 180.0 / M_PI;
 static constexpr double POLE_TOLERANCE = 1e-6; // Degrees from pole
 
 static constexpr size_t MAX_ELEMENTS_PER_CHUNK =
-    100 * 1000 * 1000; // 250M elements, well below INT_MAX
+    200 * 1000 * 1000; // 200M elements, well below INT_MAX
 
 /// Numerical tolerance for coordinate comparisons
 static constexpr CoordinateType ReferenceTolerance = 1e-12;
