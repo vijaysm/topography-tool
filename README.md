@@ -131,6 +131,23 @@ Example:
 
 You can substitute any other FV target at similar resolution by omitting `--reuse-source-mesh`; in that case the classic mesh-loading path and NetCDF writer remain unchanged. The smoothing area of $7.4e-8$ km$^2$ corresponds to approximately a 3km disk radius (since $7.4e-8$ steradians on the unit sphere implies $r = \sqrt{7.4e-8 \times 6371^2 / \pi}$ km with radius of Earth taken as 6371 km).
 
+## Testing
+
+Unit tests live in `tests/` and can be built and run without MPI (only MOAB, OpenMP, and HDF5 are needed):
+
+```bash
+cd tests && make run
+```
+
+### Test Suite
+
+| Test | Description |
+|------|-------------|
+| `test_compare_rgl_kdtree_locator` | Validates `RegularGridLocator::radiusSearch` against a brute-force haversine reference. Covers mid-latitude, near-pole, cross-pole, exact-pole, and dateline queries on both `[0,360)` and `[-180,180)` grids. 1,074 queries. |
+| `test_kdtree_locator` | Validates nanoflann 3D KD-tree radius search against brute-force L2 on 50k random unit-sphere points. Covers poles, equator, near-poles, variable radii. 558 queries. |
+| `test_utilities` | Exhaustive tests for `MBDAUtilities.hpp`: coordinate transforms (`RLLtoXYZ_Deg` / `XYZtoRLL_Deg` round-trip, unit-sphere constraint, known values at poles/equator/antimeridian), distance functions (haversine symmetry, triangle inequality, longitude wraparound, pole equidistance, antipodal=180°, 3D-vs-lonlat consistency, chord monotonicity), `angular_to_cartesian` / `cartesian_to_angular` inverse pair, `normalize_longitude` range and idempotency. 2,886 checks. |
+| `test_disk_averaging` | Tests the disk-area averaging algorithm (core of `PCDiskAveragedProjectionRemapper`): constant field preservation, linear field mean matches center value, min-max bounds (no overshoot), smoothing reduces range, `[0,360)` vs `[-180,180)` grid convention independence, full coverage with kNN fallback (no NaN/inf), pole-region averaging correctness. 20 property checks. |
+
 ## License
 
 BSD 3-Clause License

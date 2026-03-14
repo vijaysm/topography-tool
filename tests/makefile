@@ -22,7 +22,7 @@ OBJ_FILES := $(patsubst %.cpp, %.o, $(SRC_FILES))
 
 default: all
 
-EXAMPLES = test_compare_rgl_kdtree_locator test_kdtree_locator
+EXAMPLES = test_compare_rgl_kdtree_locator test_kdtree_locator test_utilities test_disk_averaging
 ALLEXAMPLES = ${EXAMPLES}
 
 all: $(ALLEXAMPLES)
@@ -33,12 +33,23 @@ RegularGridLocator.o: ../src/RegularGridLocator.cpp
 	@echo "  [CXX]  $< ..."
 	${VERBOSE}${MOAB_CXX} ${CXXFLAGS} ${MOAB_CXXFLAGS} ${MOAB_CPPFLAGS} ${MOAB_INCLUDES} -DMESH_DIR=\"${MESH_DIR}\" -c $< -o $@
 
+# RegularGridLocator radius search vs brute-force haversine + KD-tree cross-check
 test_compare_rgl_kdtree_locator: test_compare_rgl_kdtree_locator.o RegularGridLocator.o
 	@echo "[CXXLD]  $@ ..."
 	${VERBOSE}${MOAB_CXX} -o $@ $^ ${MOAB_LIBS_LINK}
 
-# KD-tree test is standalone (no easylogging, no RegularGridLocator)
+# nanoflann KD-tree radius search vs brute-force L2
 test_kdtree_locator: test_kdtree_locator.o
+	@echo "[CXXLD]  $@ ..."
+	${VERBOSE}${MOAB_CXX} -o $@ $^ ${MOAB_LIBS_LINK}
+
+# MBDAUtilities coordinate transforms, distances, normalization
+test_utilities: test_utilities.o
+	@echo "[CXXLD]  $@ ..."
+	${VERBOSE}${MOAB_CXX} -o $@ $^ ${MOAB_LIBS_LINK}
+
+# Disk-area averaging algorithm properties
+test_disk_averaging: test_disk_averaging.o RegularGridLocator.o
 	@echo "[CXXLD]  $@ ..."
 	${VERBOSE}${MOAB_CXX} -o $@ $^ ${MOAB_LIBS_LINK}
 
