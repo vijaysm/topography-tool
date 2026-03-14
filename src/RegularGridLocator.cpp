@@ -356,7 +356,6 @@ size_t RegularGridLocator::radiusSearch(
   // Search within computed bounds
   for (size_t ilat = ilat_min; ilat <= ilat_max; ++ilat) {
     CoordinateType grid_lat = m_lats[ilat];
-    bool lat_at_pole = is_at_pole(grid_lat);
 
     if (wraps_around) {
       // Search all longitudes (wraparound case)
@@ -368,10 +367,6 @@ size_t RegularGridLocator::radiusSearch(
         if (dist <= radius) {
           size_t idx = get_linear_index(ilat, ilon);
           matches.push_back({idx, dist * dist});
-
-          // If this latitude is at pole, we only need one longitude value
-          if (lat_at_pole)
-            break;
         }
       }
     } else {
@@ -384,10 +379,6 @@ size_t RegularGridLocator::radiusSearch(
         if (dist <= radius) {
           size_t idx = get_linear_index(ilat, ilon);
           matches.push_back({idx, dist * dist});
-
-          // If this latitude is at pole, we only need one longitude value
-          if (lat_at_pole)
-            break;
         }
       }
     }

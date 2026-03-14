@@ -1,7 +1,7 @@
 #ifndef REGULAR_GRID_LOCATOR_HPP
 #define REGULAR_GRID_LOCATOR_HPP
 
-#include "ParallelPointCloudReader.hpp"
+#include "MBDAUtilities.hpp"
 #include "nanoflann.hpp"
 #include <algorithm>
 #include <array>

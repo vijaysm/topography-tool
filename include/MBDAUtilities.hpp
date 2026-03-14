@@ -2,6 +2,11 @@
 #ifndef MBDA_UTILITIES_HPP
 #define MBDA_UTILITIES_HPP
 
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+
 //===========================================================================
 // Type Definitions and Utility Functions
 //===========================================================================
